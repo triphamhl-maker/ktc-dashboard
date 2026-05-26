@@ -233,7 +233,11 @@ async def get_overview_kpi(
     start_date: Optional[str] = None,
     end_date: Optional[str] = None,
 ) -> Dict:
-    """Get KPI overview — aggregates across selected date range."""
+    """Get KPI overview — aggregates across selected date range.
+    
+    When a date range is specified, KPIs are summed/averaged across ALL days
+    in the range. When no range is specified, shows the latest day only.
+    """
     db = await get_db()
     try:
         # Build date filter
@@ -246,87 +250,141 @@ async def get_overview_kpi(
             date_conds.append("time_date <= ?")
             date_params.append(end_date)
         date_where = (" AND " + " AND ".join(date_conds)) if date_conds else ""
+        has_date_filter = bool(start_date or end_date)
 
-        # Get overall totals within range
+        # Get totals within range
         cursor = await db.execute(
             f"""SELECT
                 SUM(volume) as total_volume,
                 SUM(CASE WHEN is_backlog = 1 THEN volume ELSE 0 END) as backlog_vol,
                 SUM(lead_time * volume) as weighted_lt,
                 MAX(time_date) as latest_date,
-                MAX(crawled_at) as crawled_at
+                MIN(time_date) as earliest_date,
+                MAX(crawled_at) as crawled_at,
+                COUNT(DISTINCT time_date) as day_count
                FROM backlog_snapshots WHERE 1=1{date_where}""",
             date_params,
         )
         data = dict(await cursor.fetchone())
-        total = data.get("total_volume") or 0
-        if total == 0:
+        range_vol = data.get("total_volume") or 0
+        if range_vol == 0:
             return {}
 
-        avg_lt = (data.get("weighted_lt") or 0) / total if total > 0 else 0
-
-        # Use the latest date in range as reference
+        range_bl = data.get("backlog_vol") or 0
+        range_pct = (range_bl / range_vol * 100) if range_vol > 0 else 0
+        range_lt = (data.get("weighted_lt") or 0) / range_vol if range_vol > 0 else 0
         latest_date = data.get("latest_date")
+        earliest_date = data.get("earliest_date")
+        day_count = data.get("day_count") or 1
+
+        # Total lead time summed across range
         cursor = await db.execute(
-            """SELECT SUM(lead_time) as total_lt
-               FROM backlog_snapshots
-               WHERE time_date = ?""",
-            (latest_date,),
+            f"""SELECT SUM(lead_time) as total_lt
+               FROM backlog_snapshots WHERE 1=1{date_where}""",
+            date_params,
         )
         lt_row = dict(await cursor.fetchone())
         total_lt = lt_row.get("total_lt") or 0
 
-        # Get latest day KPIs for comparison
-        cursor = await db.execute(
-            """SELECT SUM(volume) as day_vol,
-                      SUM(CASE WHEN is_backlog = 1 THEN volume ELSE 0 END) as day_bl
-               FROM backlog_snapshots WHERE time_date = ?""",
-            (latest_date,),
-        )
-        day_data = dict(await cursor.fetchone())
-        day_vol = day_data.get("day_vol") or 0
-        day_bl = day_data.get("day_bl") or 0
-        day_pct = (day_bl / day_vol * 100) if day_vol > 0 else 0
+        if has_date_filter:
+            # ── Date range mode: aggregate across ALL days in range ──
+            display_vol = range_vol
+            display_bl = range_bl
+            display_pct = range_pct
+            display_lt = range_lt
+            display_label = f"{earliest_date} → {latest_date}" if earliest_date != latest_date else latest_date
 
-        # Previous day for change calculation
-        cursor = await db.execute(
-            """SELECT time_date FROM backlog_snapshots
-               WHERE time_date < ?
-               GROUP BY time_date
-               ORDER BY time_date DESC LIMIT 1""",
-            (latest_date,),
-        )
-        prev_date_row = await cursor.fetchone()
-        vol_change = 0
-        pct_change = 0.0
-        lt_change = 0.0
+            # Change: compare the range vs an equivalent period before it
+            if start_date and end_date:
+                from datetime import datetime as dt, timedelta
+                try:
+                    sd = dt.strptime(start_date, "%Y-%m-%d")
+                    ed = dt.strptime(end_date, "%Y-%m-%d")
+                    span = (ed - sd).days + 1
+                    prev_end = sd - timedelta(days=1)
+                    prev_start = prev_end - timedelta(days=span - 1)
+                    ps = prev_start.strftime("%Y-%m-%d")
+                    pe = prev_end.strftime("%Y-%m-%d")
 
-        if prev_date_row:
-            prev_date = prev_date_row[0]
+                    cursor = await db.execute(
+                        """SELECT SUM(volume) as pv,
+                                  SUM(CASE WHEN is_backlog = 1 THEN volume ELSE 0 END) as pb,
+                                  SUM(lead_time * volume) as pwlt
+                           FROM backlog_snapshots
+                           WHERE time_date >= ? AND time_date <= ?""",
+                        (ps, pe),
+                    )
+                    prev = dict(await cursor.fetchone())
+                    pv = prev.get("pv") or 0
+                    pb = prev.get("pb") or 0
+                    prev_pct = (pb / pv * 100) if pv > 0 else 0
+                    prev_lt = (prev.get("pwlt") or 0) / pv if pv > 0 else 0
+
+                    vol_change = display_vol - pv
+                    pct_change = round(display_pct - prev_pct, 4)
+                    lt_change = round(display_lt - prev_lt, 2)
+                except Exception:
+                    vol_change = 0
+                    pct_change = 0.0
+                    lt_change = 0.0
+            else:
+                vol_change = 0
+                pct_change = 0.0
+                lt_change = 0.0
+        else:
+            # ── No filter: show latest day only (original behavior) ──
             cursor = await db.execute(
-                """SELECT SUM(volume) as pv,
-                          SUM(CASE WHEN is_backlog = 1 THEN volume ELSE 0 END) as pb,
-                          SUM(lead_time * volume) as pwlt
+                """SELECT SUM(volume) as day_vol,
+                          SUM(CASE WHEN is_backlog = 1 THEN volume ELSE 0 END) as day_bl
                    FROM backlog_snapshots WHERE time_date = ?""",
-                (prev_date,),
+                (latest_date,),
             )
-            prev = dict(await cursor.fetchone())
-            pv = prev.get("pv") or 0
-            pb = prev.get("pb") or 0
-            prev_pct = (pb / pv * 100) if pv > 0 else 0
-            prev_lt = (prev.get("pwlt") or 0) / pv if pv > 0 else 0
+            day_data = dict(await cursor.fetchone())
+            display_vol = day_data.get("day_vol") or 0
+            display_bl = day_data.get("day_bl") or 0
+            display_pct = (display_bl / display_vol * 100) if display_vol > 0 else 0
+            display_lt = range_lt
+            display_label = latest_date
 
-            vol_change = day_vol - pv
-            pct_change = round(day_pct - prev_pct, 4)
-            lt_change = round(avg_lt - prev_lt, 2)
+            # Compare vs previous day
+            cursor = await db.execute(
+                """SELECT time_date FROM backlog_snapshots
+                   WHERE time_date < ?
+                   GROUP BY time_date
+                   ORDER BY time_date DESC LIMIT 1""",
+                (latest_date,),
+            )
+            prev_date_row = await cursor.fetchone()
+            vol_change = 0
+            pct_change = 0.0
+            lt_change = 0.0
+
+            if prev_date_row:
+                prev_date = prev_date_row[0]
+                cursor = await db.execute(
+                    """SELECT SUM(volume) as pv,
+                              SUM(CASE WHEN is_backlog = 1 THEN volume ELSE 0 END) as pb,
+                              SUM(lead_time * volume) as pwlt
+                       FROM backlog_snapshots WHERE time_date = ?""",
+                    (prev_date,),
+                )
+                prev = dict(await cursor.fetchone())
+                pv = prev.get("pv") or 0
+                pb = prev.get("pb") or 0
+                prev_pct = (pb / pv * 100) if pv > 0 else 0
+                prev_lt = (prev.get("pwlt") or 0) / pv if pv > 0 else 0
+
+                vol_change = display_vol - pv
+                pct_change = round(display_pct - prev_pct, 4)
+                lt_change = round(display_lt - prev_lt, 2)
 
         return {
-            "total_volume": day_vol,
-            "backlog_gt24h_volume": day_bl,
-            "backlog_gt24h_percent": round(day_pct, 4),
-            "avg_lead_time": round(avg_lt, 2),
+            "total_volume": display_vol,
+            "backlog_gt24h_volume": display_bl,
+            "backlog_gt24h_percent": round(display_pct, 4),
+            "avg_lead_time": round(display_lt, 2),
             "total_lead_time": round(total_lt, 2),
-            "latest_date": latest_date,
+            "latest_date": display_label,
             "crawled_at": data.get("crawled_at"),
             "volume_change": vol_change,
             "backlog_percent_change": pct_change,
