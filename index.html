@@ -1,0 +1,344 @@
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>KTC Operations Dashboard — Giám sát Kho Chuyển Tiếp</title>
+    <meta name="description" content="Dashboard giám sát vận hành kho chuyển tiếp KTC: theo dõi volume, backlog >24h, leadtime theo thời gian thực.">
+    
+    <!-- Google Fonts -->
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800;900&display=swap" rel="stylesheet">
+    
+    <!-- CSS -->
+    <link rel="stylesheet" href="styles.css">
+    
+    <!-- Chart.js CDN -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.4/dist/chart.umd.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chartjs-plugin-annotation@3.0.1/dist/chartjs-plugin-annotation.min.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
+</head>
+<body class="dark-theme">
+    <div class="app-container">
+        
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo-container">
+                    <div class="logo-icon">
+                        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round" class="logo-svg">
+                            <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z"></path>
+                            <polyline points="3.27 6.96 12 12.01 20.73 6.96"></polyline>
+                            <line x1="12" y1="22.08" x2="12" y2="12"></line>
+                        </svg>
+                    </div>
+                    <div class="logo-text-group">
+                        <span class="logo-text">KTC Dashboard</span>
+                        <span class="logo-version">v3.0</span>
+                    </div>
+                </div>
+            </div>
+            
+            <div class="sidebar-divider"></div>
+            
+            <!-- Crawler Status Widget -->
+            <div class="crawler-widget" id="crawlerWidget">
+                <div class="crawler-widget-header">
+                    <div class="crawler-status-dot" id="crawlerDot"></div>
+                    <span class="crawler-label">Data Pipeline</span>
+                </div>
+                <div class="crawler-detail" id="crawlerDetail">Đang khởi tạo...</div>
+                <div class="crawler-meta">
+                    <span id="crawlerRecords">—</span>
+                    <span id="crawlerInterval">Mỗi 10 phút</span>
+                </div>
+                <button class="btn btn-crawler" id="btnTriggerCrawl">
+                    <i data-lucide="refresh-cw" class="btn-icon"></i>
+                    <span>Đồng bộ ngay</span>
+                </button>
+            </div>
+            
+            <div class="sidebar-divider"></div>
+            
+            <!-- Filters Section -->
+            <div class="sidebar-section">
+                <h3 class="section-title">
+                    <i data-lucide="sliders-horizontal" class="section-icon"></i>
+                    Cấu hình
+                </h3>
+                
+                <div class="control-group">
+                    <label for="thresholdSlider">Ngưỡng SLA Backlog >24h</label>
+                    <div class="slider-container">
+                        <input type="range" id="thresholdSlider" min="0.05" max="5" step="0.05" value="0.5">
+                        <span class="slider-value" id="thresholdValue">0.50%</span>
+                    </div>
+                    <p class="control-hint">Tỷ lệ vượt ngưỡng sẽ chuyển sang cảnh báo đỏ</p>
+                </div>
+            </div>
+            
+            <!-- Theme Toggle -->
+            <div class="sidebar-footer">
+                <div class="theme-switch" id="themeToggle">
+                    <i data-lucide="sun" class="theme-icon sun-icon"></i>
+                    <i data-lucide="moon" class="theme-icon moon-icon"></i>
+                    <span class="theme-label">Chế độ sáng/tối</span>
+                </div>
+                <div class="sidebar-copyright">
+                    Kho Chuyển Tiếp — 20757000
+                </div>
+            </div>
+        </aside>
+        
+        <!-- Mobile Sidebar Toggle -->
+        <button class="mobile-menu-btn" id="mobileMenuBtn">
+            <i data-lucide="menu"></i>
+        </button>
+        <div class="sidebar-backdrop" id="sidebarBackdrop"></div>
+        
+        <!-- Main Content -->
+        <main class="main-content">
+            
+            <!-- Top Header -->
+            <header class="page-header">
+                <div class="header-left">
+                    <h1 id="pageTitle">Operational Dashboard</h1>
+                    <p class="header-subtitle">
+                        Giám sát chỉ số vận hành Kho Chuyển Tiếp theo thời gian thực
+                        <span class="update-badge" id="updateBadge">
+                            <i data-lucide="clock" style="width:12px;height:12px;"></i>
+                            <span id="lastUpdateText">Đang tải...</span>
+                        </span>
+                    </p>
+                </div>
+                <div class="header-right">
+                    <div class="sla-indicator" id="slaIndicator">
+                        <div class="sla-dot"></div>
+                        <span class="sla-text">SLA</span>
+                    </div>
+                </div>
+            </header>
+            
+            <!-- Date Range Toolbar -->
+            <div class="date-toolbar" id="dateToolbar">
+                <div class="date-toolbar-left">
+                    <i data-lucide="calendar-range" class="toolbar-icon"></i>
+                    <span class="toolbar-label">Khoảng thời gian:</span>
+                    <div class="date-input-group">
+                        <label for="dateStart" class="date-input-label">Từ</label>
+                        <input type="date" id="dateStart" class="date-input">
+                    </div>
+                    <span class="date-separator">→</span>
+                    <div class="date-input-group">
+                        <label for="dateEnd" class="date-input-label">Đến</label>
+                        <input type="date" id="dateEnd" class="date-input">
+                    </div>
+                    <button class="btn-apply-date" id="btnApplyDate">
+                        <i data-lucide="check" style="width:14px;height:14px;"></i>
+                        Áp dụng
+                    </button>
+                </div>
+                <div class="date-toolbar-right">
+                    <div class="date-presets">
+                        <button class="preset-btn" data-days="7">7 ngày</button>
+                        <button class="preset-btn" data-days="14">14 ngày</button>
+                        <button class="preset-btn" data-days="30">30 ngày</button>
+                        <button class="preset-btn active" data-days="0">Tất cả</button>
+                    </div>
+                    <button class="btn-reset-date" id="btnResetDate" title="Đặt lại khoảng thời gian">
+                        <i data-lucide="rotate-ccw" style="width:14px;height:14px;"></i>
+                    </button>
+                </div>
+            </div>
+            
+            <!-- Dashboard Grid -->
+            <div class="dashboard-grid">
+                
+                <!-- KPI Row -->
+                <section class="kpi-row">
+                    <!-- KPI 1: Total Volume -->
+                    <div class="kpi-card" id="kpiVolume">
+                        <div class="kpi-header">
+                            <span class="kpi-label">Tổng Volume</span>
+                            <div class="kpi-badge badge-blue">
+                                <i data-lucide="package"></i>
+                            </div>
+                        </div>
+                        <div class="kpi-body">
+                            <span class="kpi-value" id="kpiVolumeValue">—</span>
+                            <div class="kpi-change" id="kpiVolumeChange"></div>
+                        </div>
+                        <div class="kpi-footer">
+                            <span class="kpi-note" id="kpiVolumeNote">Ngày mới nhất</span>
+                        </div>
+                    </div>
+                    
+                    <!-- KPI 2: Backlog >24h % -->
+                    <div class="kpi-card kpi-highlight" id="kpiBacklog">
+                        <div class="kpi-glow"></div>
+                        <div class="kpi-header">
+                            <span class="kpi-label">% Backlog >24h</span>
+                            <div class="kpi-badge badge-orange">
+                                <i data-lucide="alert-triangle"></i>
+                            </div>
+                        </div>
+                        <div class="kpi-body">
+                            <span class="kpi-value" id="kpiBacklogValue">—</span>
+                            <div class="kpi-sla-status" id="kpiSlaStatus">
+                                <span class="sla-pill">—</span>
+                            </div>
+                        </div>
+                        <div class="kpi-footer">
+                            <div class="kpi-progress">
+                                <div class="kpi-progress-bar" id="kpiBacklogProgress"></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <!-- KPI 3: LeadTime -->
+                    <div class="kpi-card" id="kpiLeadtime">
+                        <div class="kpi-header">
+                            <span class="kpi-label">LeadTime Trung Bình</span>
+                            <div class="kpi-badge badge-green">
+                                <i data-lucide="timer"></i>
+                            </div>
+                        </div>
+                        <div class="kpi-body">
+                            <span class="kpi-value" id="kpiLeadtimeValue">—</span>
+                            <div class="kpi-change" id="kpiLeadtimeChange"></div>
+                        </div>
+                        <div class="kpi-footer">
+                            <span class="kpi-note">Weighted avg toàn bộ mốc giờ</span>
+                        </div>
+                    </div>
+                    
+                    <!-- KPI 4: Backlog Volume -->
+                    <div class="kpi-card" id="kpiBacklogVol">
+                        <div class="kpi-header">
+                            <span class="kpi-label">Đơn Tồn >24h</span>
+                            <div class="kpi-badge badge-red">
+                                <i data-lucide="hourglass"></i>
+                            </div>
+                        </div>
+                        <div class="kpi-body">
+                            <span class="kpi-value" id="kpiBacklogVolValue">—</span>
+                            <div class="kpi-change" id="kpiBacklogVolChange"></div>
+                        </div>
+                        <div class="kpi-footer">
+                            <span class="kpi-note">Đơn hàng trễ hẹn xử lý</span>
+                        </div>
+                    </div>
+                </section>
+                
+                <!-- Charts Row 1 -->
+                <section class="charts-row">
+                    <!-- Main Trend Chart -->
+                    <div class="chart-card chart-main" id="trendChartCard">
+                        <div class="chart-card-header">
+                            <div class="chart-title-group">
+                                <h3>
+                                    <i data-lucide="trending-up" class="chart-icon"></i>
+                                    Xu Hướng Backlog >24h
+                                </h3>
+                                <p class="chart-subtitle">% Volume tồn kho quá 24h theo ngày — đường đỏ: ngưỡng SLA</p>
+                            </div>
+                        </div>
+                        <div class="chart-body">
+                            <canvas id="trendChart"></canvas>
+                        </div>
+                    </div>
+                    
+                    <!-- Distribution Doughnut -->
+                    <div class="chart-card chart-side" id="distChartCard">
+                        <div class="chart-card-header">
+                            <div class="chart-title-group">
+                                <h3>
+                                    <i data-lucide="pie-chart" class="chart-icon"></i>
+                                    Phân Phối Mốc Giờ
+                                </h3>
+                                <p class="chart-subtitle">Ngày mới nhất</p>
+                            </div>
+                        </div>
+                        <div class="chart-body chart-body-centered">
+                            <canvas id="distChart"></canvas>
+                        </div>
+                    </div>
+                </section>
+                
+                <!-- Charts Row 2 -->
+                <section class="charts-row-full">
+                    <div class="chart-card" id="volumeChartCard">
+                        <div class="chart-card-header">
+                            <div class="chart-title-group">
+                                <h3>
+                                    <i data-lucide="bar-chart-3" class="chart-icon"></i>
+                                    Volume & LeadTime Theo Ngày
+                                </h3>
+                                <p class="chart-subtitle">So sánh sản lượng xuất kho và thời gian xử lý trung bình</p>
+                            </div>
+                        </div>
+                        <div class="chart-body">
+                            <canvas id="volumeChart"></canvas>
+                        </div>
+                    </div>
+                </section>
+                
+                <!-- Data Table -->
+                <section class="table-section">
+                    <div class="chart-card">
+                        <div class="chart-card-header table-header-flex">
+                            <div class="chart-title-group">
+                                <h3>
+                                    <i data-lucide="table-2" class="chart-icon"></i>
+                                    Dữ Liệu Chi Tiết
+                                </h3>
+                                <p class="chart-subtitle" id="tableCount">0 dòng dữ liệu</p>
+                            </div>
+                            <div class="table-actions">
+                                <div class="search-box">
+                                    <i data-lucide="search" class="search-icon"></i>
+                                    <input type="text" id="tableSearch" placeholder="Tìm kiếm...">
+                                </div>
+                            </div>
+                        </div>
+                        <div class="table-wrapper">
+                            <table class="data-table" id="dataTable">
+                                <thead>
+                                    <tr>
+                                        <th>Ngày</th>
+                                        <th>Mốc Giờ</th>
+                                        <th class="text-right">Volume</th>
+                                        <th class="text-right">% Volume</th>
+                                        <th class="text-right">LeadTime (h)</th>
+                                        <th class="text-center">Trạng Thái</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="tableBody">
+                                    <!-- Dynamic rows -->
+                                </tbody>
+                            </table>
+                        </div>
+                        <div class="table-footer">
+                            <span class="table-info" id="tableInfo">Đang tải...</span>
+                            <div class="table-pagination" id="tablePagination"></div>
+                        </div>
+                    </div>
+                </section>
+                
+            </div>
+            
+        </main>
+        
+    </div>
+    
+    <!-- Scroll To Top -->
+    <button class="scroll-top-btn" id="scrollTopBtn" title="Lên đầu trang">
+        <i data-lucide="chevron-up"></i>
+    </button>
+
+    <!-- App JS -->
+    <script src="app.js"></script>
+</body>
+</html>

@@ -1,0 +1,575 @@
+"""
+SQLite database management for GHN Backlog KTC Dashboard.
+Simplified schema: no warehouse dimension — single KTC view.
+Data columns: aging_bucket, time_date, volume, percent_volume, lead_time.
+Uses UNIQUE constraint to prevent duplicate data on re-crawl.
+"""
+
+import aiosqlite
+import logging
+from datetime import datetime, timedelta
+from typing import Optional, List, Dict
+
+from config import DB_PATH, is_backlog_24h
+
+logger = logging.getLogger("database")
+
+
+async def get_db() -> aiosqlite.Connection:
+    """Get async database connection."""
+    db = await aiosqlite.connect(str(DB_PATH))
+    db.row_factory = aiosqlite.Row
+    await db.execute("PRAGMA journal_mode=WAL")
+    return db
+
+
+# ── Schema ─────────────────────────────────────────────────
+
+async def init_database():
+    """Create tables and indexes if they don't exist."""
+    db = await get_db()
+    try:
+        await db.executescript("""
+            CREATE TABLE IF NOT EXISTS backlog_snapshots (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                aging_bucket TEXT NOT NULL,
+                time_date TEXT NOT NULL,
+                volume INTEGER DEFAULT 0,
+                percent_volume REAL DEFAULT 0,
+                lead_time REAL DEFAULT 0,
+                is_backlog INTEGER DEFAULT 0,
+                crawled_at DATETIME DEFAULT (datetime('now')),
+                source TEXT DEFAULT 'crawl',
+                UNIQUE(aging_bucket, time_date)
+            );
+
+            CREATE TABLE IF NOT EXISTS kpi_history (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                crawled_at DATETIME DEFAULT (datetime('now')),
+                total_volume INTEGER DEFAULT 0,
+                backlog_gt24h_volume INTEGER DEFAULT 0,
+                backlog_gt24h_percent REAL DEFAULT 0,
+                avg_lead_time REAL DEFAULT 0
+            );
+
+            CREATE TABLE IF NOT EXISTS crawl_log (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                crawled_at DATETIME DEFAULT (datetime('now')),
+                records_count INTEGER DEFAULT 0,
+                duration_seconds REAL DEFAULT 0,
+                status TEXT DEFAULT 'success',
+                error_message TEXT
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_snapshot_time
+                ON backlog_snapshots(time_date);
+            CREATE INDEX IF NOT EXISTS idx_snapshot_bucket_date
+                ON backlog_snapshots(aging_bucket, time_date);
+            CREATE INDEX IF NOT EXISTS idx_kpi_crawled
+                ON kpi_history(crawled_at);
+        """)
+        await db.commit()
+        logger.info("[DB] Schema initialized")
+    finally:
+        await db.close()
+
+
+async def reset_database():
+    """Drop and recreate all tables (used when upgrading schema)."""
+    db = await get_db()
+    try:
+        await db.executescript("""
+            DROP TABLE IF EXISTS backlog_snapshots;
+            DROP TABLE IF EXISTS kpi_history;
+            DROP TABLE IF EXISTS crawl_log;
+        """)
+        await db.commit()
+        logger.info("[DB] Tables dropped for schema upgrade")
+    finally:
+        await db.close()
+    await init_database()
+
+
+# ── Data Insertion ─────────────────────────────────────────
+
+async def insert_snapshot_batch(rows: List[Dict], source: str = "crawl"):
+    """Insert or update a batch of snapshot rows. Uses INSERT OR REPLACE
+    to avoid duplicates on (aging_bucket, time_date)."""
+    if not rows:
+        return 0
+
+    db = await get_db()
+    try:
+        now = datetime.utcnow().isoformat()
+        count = 0
+        new_count = 0
+
+        for row in rows:
+            is_bl = 1 if is_backlog_24h(row.get("aging_bucket", "")) else 0
+            # Check if record exists
+            cursor = await db.execute(
+                "SELECT id FROM backlog_snapshots WHERE aging_bucket = ? AND time_date = ?",
+                (row.get("aging_bucket", ""), row.get("time_date", "")),
+            )
+            existing = await cursor.fetchone()
+
+            if existing:
+                # Update existing record
+                await db.execute(
+                    """UPDATE backlog_snapshots
+                       SET volume = ?, percent_volume = ?, lead_time = ?,
+                           is_backlog = ?, crawled_at = ?, source = ?
+                       WHERE aging_bucket = ? AND time_date = ?""",
+                    (
+                        row.get("volume", 0),
+                        row.get("percent_volume", 0.0),
+                        row.get("lead_time", 0.0),
+                        is_bl,
+                        now,
+                        source,
+                        row.get("aging_bucket", ""),
+                        row.get("time_date", ""),
+                    ),
+                )
+            else:
+                # Insert new record
+                await db.execute(
+                    """INSERT INTO backlog_snapshots
+                       (aging_bucket, time_date, volume, percent_volume,
+                        lead_time, is_backlog, crawled_at, source)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                    (
+                        row.get("aging_bucket", ""),
+                        row.get("time_date", ""),
+                        row.get("volume", 0),
+                        row.get("percent_volume", 0.0),
+                        row.get("lead_time", 0.0),
+                        is_bl,
+                        now,
+                        source,
+                    ),
+                )
+                new_count += 1
+            count += 1
+
+        # Compute and save KPI history
+        total_vol = sum(r.get("volume", 0) for r in rows)
+        backlog_vol = sum(
+            r.get("volume", 0) for r in rows
+            if is_backlog_24h(r.get("aging_bucket", ""))
+        )
+        backlog_pct = (backlog_vol / total_vol * 100) if total_vol > 0 else 0
+
+        weighted_lt = sum(r.get("lead_time", 0) * r.get("volume", 0) for r in rows)
+        avg_lt = (weighted_lt / total_vol) if total_vol > 0 else 0
+
+        await db.execute(
+            """INSERT INTO kpi_history
+               (crawled_at, total_volume, backlog_gt24h_volume,
+                backlog_gt24h_percent, avg_lead_time)
+               VALUES (?, ?, ?, ?, ?)""",
+            (now, total_vol, backlog_vol, round(backlog_pct, 4), round(avg_lt, 2)),
+        )
+
+        await db.commit()
+        logger.info(f"[DB] Upserted {count} records ({new_count} new, {count - new_count} updated)")
+        return count
+    finally:
+        await db.close()
+
+
+# ── Query Helpers ──────────────────────────────────────────
+
+async def get_latest_snapshots(
+    page: int = 1,
+    limit: int = 50,
+    search: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> tuple:
+    """Get all snapshot rows (paginated, searchable, date-filtered)."""
+    db = await get_db()
+    try:
+        conditions = []
+        params = []
+
+        if search:
+            conditions.append("(aging_bucket LIKE ? OR time_date LIKE ?)")
+            params.extend([f"%{search}%", f"%{search}%"])
+        if start_date:
+            conditions.append("time_date >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("time_date <= ?")
+            params.append(end_date)
+
+        where = " AND ".join(conditions) if conditions else "1=1"
+
+        # Count
+        cursor = await db.execute(
+            f"SELECT COUNT(*) FROM backlog_snapshots WHERE {where}",
+            params,
+        )
+        total = (await cursor.fetchone())[0]
+
+        # Data
+        offset = (page - 1) * limit
+        cursor = await db.execute(
+            f"""SELECT id, aging_bucket, time_date, volume,
+                       percent_volume, lead_time, is_backlog, crawled_at
+                FROM backlog_snapshots
+                WHERE {where}
+                ORDER BY time_date DESC, aging_bucket
+                LIMIT ? OFFSET ?""",
+            params + [limit, offset],
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows], total
+    finally:
+        await db.close()
+
+
+async def get_overview_kpi(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> Dict:
+    """Get KPI overview — aggregates across selected date range."""
+    db = await get_db()
+    try:
+        # Build date filter
+        date_conds = []
+        date_params = []
+        if start_date:
+            date_conds.append("time_date >= ?")
+            date_params.append(start_date)
+        if end_date:
+            date_conds.append("time_date <= ?")
+            date_params.append(end_date)
+        date_where = (" AND " + " AND ".join(date_conds)) if date_conds else ""
+
+        # Get overall totals within range
+        cursor = await db.execute(
+            f"""SELECT
+                SUM(volume) as total_volume,
+                SUM(CASE WHEN is_backlog = 1 THEN volume ELSE 0 END) as backlog_vol,
+                SUM(lead_time * volume) as weighted_lt,
+                MAX(time_date) as latest_date,
+                MAX(crawled_at) as crawled_at
+               FROM backlog_snapshots WHERE 1=1{date_where}""",
+            date_params,
+        )
+        data = dict(await cursor.fetchone())
+        total = data.get("total_volume") or 0
+        if total == 0:
+            return {}
+
+        avg_lt = (data.get("weighted_lt") or 0) / total if total > 0 else 0
+
+        # Use the latest date in range as reference
+        latest_date = data.get("latest_date")
+        cursor = await db.execute(
+            """SELECT SUM(lead_time) as total_lt
+               FROM backlog_snapshots
+               WHERE time_date = ?""",
+            (latest_date,),
+        )
+        lt_row = dict(await cursor.fetchone())
+        total_lt = lt_row.get("total_lt") or 0
+
+        # Get latest day KPIs for comparison
+        cursor = await db.execute(
+            """SELECT SUM(volume) as day_vol,
+                      SUM(CASE WHEN is_backlog = 1 THEN volume ELSE 0 END) as day_bl
+               FROM backlog_snapshots WHERE time_date = ?""",
+            (latest_date,),
+        )
+        day_data = dict(await cursor.fetchone())
+        day_vol = day_data.get("day_vol") or 0
+        day_bl = day_data.get("day_bl") or 0
+        day_pct = (day_bl / day_vol * 100) if day_vol > 0 else 0
+
+        # Previous day for change calculation
+        cursor = await db.execute(
+            """SELECT time_date FROM backlog_snapshots
+               WHERE time_date < ?
+               GROUP BY time_date
+               ORDER BY time_date DESC LIMIT 1""",
+            (latest_date,),
+        )
+        prev_date_row = await cursor.fetchone()
+        vol_change = 0
+        pct_change = 0.0
+        lt_change = 0.0
+
+        if prev_date_row:
+            prev_date = prev_date_row[0]
+            cursor = await db.execute(
+                """SELECT SUM(volume) as pv,
+                          SUM(CASE WHEN is_backlog = 1 THEN volume ELSE 0 END) as pb,
+                          SUM(lead_time * volume) as pwlt
+                   FROM backlog_snapshots WHERE time_date = ?""",
+                (prev_date,),
+            )
+            prev = dict(await cursor.fetchone())
+            pv = prev.get("pv") or 0
+            pb = prev.get("pb") or 0
+            prev_pct = (pb / pv * 100) if pv > 0 else 0
+            prev_lt = (prev.get("pwlt") or 0) / pv if pv > 0 else 0
+
+            vol_change = day_vol - pv
+            pct_change = round(day_pct - prev_pct, 4)
+            lt_change = round(avg_lt - prev_lt, 2)
+
+        return {
+            "total_volume": day_vol,
+            "backlog_gt24h_volume": day_bl,
+            "backlog_gt24h_percent": round(day_pct, 4),
+            "avg_lead_time": round(avg_lt, 2),
+            "total_lead_time": round(total_lt, 2),
+            "latest_date": latest_date,
+            "crawled_at": data.get("crawled_at"),
+            "volume_change": vol_change,
+            "backlog_percent_change": pct_change,
+            "lead_time_change": lt_change,
+        }
+    finally:
+        await db.close()
+
+
+async def get_trend_data(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> List[Dict]:
+    """Get trend data grouped by time_date (for line chart), with optional date range."""
+    db = await get_db()
+    try:
+        conds = []
+        params = []
+        if start_date:
+            conds.append("time_date >= ?")
+            params.append(start_date)
+        if end_date:
+            conds.append("time_date <= ?")
+            params.append(end_date)
+        where = ("WHERE " + " AND ".join(conds)) if conds else ""
+
+        cursor = await db.execute(
+            f"""SELECT time_date,
+                SUM(volume) as total_volume,
+                SUM(CASE WHEN is_backlog = 1 THEN volume ELSE 0 END) as backlog_volume,
+                SUM(lead_time * volume) as weighted_lt
+               FROM backlog_snapshots
+               {where}
+               GROUP BY time_date
+               ORDER BY time_date ASC""",
+            params,
+        )
+        rows = await cursor.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            tv = d.get("total_volume") or 0
+            bv = d.get("backlog_volume") or 0
+            bp = (bv / tv * 100) if tv > 0 else 0
+            al = (d.get("weighted_lt") or 0) / tv if tv > 0 else 0
+            result.append({
+                "time_date": d["time_date"],
+                "total_volume": tv,
+                "backlog_volume": bv,
+                "backlog_percent": round(bp, 4),
+                "avg_lead_time": round(al, 2),
+            })
+        return result
+    finally:
+        await db.close()
+
+
+async def get_backlog_daily(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> List[Dict]:
+    """Get daily backlog stats for Bar/Pie chart — %volume >24h per day."""
+    db = await get_db()
+    try:
+        conds = []
+        params = []
+        if start_date:
+            conds.append("time_date >= ?")
+            params.append(start_date)
+        if end_date:
+            conds.append("time_date <= ?")
+            params.append(end_date)
+        where = ("WHERE " + " AND ".join(conds)) if conds else ""
+
+        cursor = await db.execute(
+            f"""SELECT time_date,
+                SUM(volume) as total_volume,
+                SUM(CASE WHEN is_backlog = 1 THEN volume ELSE 0 END) as backlog_volume,
+                SUM(lead_time) as total_lt
+               FROM backlog_snapshots
+               {where}
+               GROUP BY time_date
+               ORDER BY time_date ASC""",
+            params,
+        )
+        rows = await cursor.fetchall()
+        result = []
+        for r in rows:
+            d = dict(r)
+            tv = d.get("total_volume") or 0
+            bv = d.get("backlog_volume") or 0
+            bp = (bv / tv * 100) if tv > 0 else 0
+            result.append({
+                "time_date": d["time_date"],
+                "total_volume": tv,
+                "backlog_volume": bv,
+                "backlog_percent": round(bp, 2),
+                "total_lead_time": round(d.get("total_lt") or 0, 2),
+            })
+        return result
+    finally:
+        await db.close()
+
+
+async def get_kpi_history(hours: int = 24) -> List[Dict]:
+    """Get KPI history over time."""
+    db = await get_db()
+    try:
+        cutoff = (datetime.utcnow() - timedelta(hours=hours)).isoformat()
+        cursor = await db.execute(
+            """SELECT crawled_at, total_volume, backlog_gt24h_volume,
+                      backlog_gt24h_percent, avg_lead_time
+               FROM kpi_history
+               WHERE crawled_at >= ?
+               ORDER BY crawled_at ASC""",
+            (cutoff,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+async def get_snapshot_count() -> int:
+    """Get total snapshot rows."""
+    db = await get_db()
+    try:
+        cursor = await db.execute("SELECT COUNT(*) FROM backlog_snapshots")
+        row = await cursor.fetchone()
+        return row[0] if row else 0
+    finally:
+        await db.close()
+
+
+async def get_sla_summary(threshold_pct: float = 0.5) -> Dict:
+    """Compute SLA summary across all daily data.
+    
+    SLA thresholds:
+    - Safe: backlog% < threshold * 0.5
+    - Warning: threshold * 0.5 <= backlog% < threshold
+    - Danger: backlog% >= threshold
+    """
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            """SELECT time_date,
+                SUM(volume) as total_volume,
+                SUM(CASE WHEN is_backlog = 1 THEN volume ELSE 0 END) as backlog_volume,
+                SUM(lead_time * volume) as weighted_lt
+               FROM backlog_snapshots
+               GROUP BY time_date
+               ORDER BY time_date ASC"""
+        )
+        rows = await cursor.fetchall()
+        if not rows:
+            return {"overall_status": "safe", "daily_details": [], "total_days": 0}
+
+        daily = []
+        days_above = 0
+        warn_threshold = threshold_pct * 0.5
+
+        for r in rows:
+            d = dict(r)
+            tv = d.get("total_volume") or 0
+            bv = d.get("backlog_volume") or 0
+            bp = (bv / tv * 100) if tv > 0 else 0
+            al = (d.get("weighted_lt") or 0) / tv if tv > 0 else 0
+
+            if bp >= threshold_pct:
+                status = "danger"
+                days_above += 1
+            elif bp >= warn_threshold:
+                status = "warning"
+            else:
+                status = "safe"
+
+            daily.append({
+                "time_date": d["time_date"],
+                "total_volume": tv,
+                "backlog_volume": bv,
+                "backlog_percent": round(bp, 4),
+                "avg_lead_time": round(al, 2),
+                "sla_status": status,
+            })
+
+        # Latest day
+        latest = daily[-1] if daily else {}
+
+        # Last 7 days averages
+        last_7 = daily[-7:] if len(daily) >= 7 else daily
+        avg_bp_7d = sum(d["backlog_percent"] for d in last_7) / len(last_7) if last_7 else 0
+        avg_lt_7d = sum(d["avg_lead_time"] for d in last_7) / len(last_7) if last_7 else 0
+
+        # Trend direction (last 3 days)
+        trend = "flat"
+        if len(daily) >= 3:
+            recent = [d["backlog_percent"] for d in daily[-3:]]
+            if recent[-1] > recent[0] * 1.1:
+                trend = "up"
+            elif recent[-1] < recent[0] * 0.9:
+                trend = "down"
+
+        # Overall status based on latest day
+        overall = latest.get("sla_status", "safe")
+
+        return {
+            "overall_status": overall,
+            "latest_date": latest.get("time_date"),
+            "latest_backlog_percent": latest.get("backlog_percent", 0),
+            "latest_lead_time": latest.get("avg_lead_time", 0),
+            "latest_total_volume": latest.get("total_volume", 0),
+            "latest_backlog_volume": latest.get("backlog_volume", 0),
+            "avg_backlog_percent_7d": round(avg_bp_7d, 4),
+            "avg_lead_time_7d": round(avg_lt_7d, 2),
+            "trend_direction": trend,
+            "days_above_threshold": days_above,
+            "total_days": len(daily),
+            "daily_details": daily,
+        }
+    finally:
+        await db.close()
+
+
+async def get_distribution_latest() -> List[Dict]:
+    """Get aging bucket distribution for the latest date (for doughnut chart)."""
+    db = await get_db()
+    try:
+        cursor = await db.execute(
+            "SELECT MAX(time_date) FROM backlog_snapshots"
+        )
+        row = await cursor.fetchone()
+        latest_date = row[0] if row else None
+        if not latest_date:
+            return []
+
+        cursor = await db.execute(
+            """SELECT aging_bucket, volume, percent_volume, lead_time
+               FROM backlog_snapshots
+               WHERE time_date = ?
+               ORDER BY aging_bucket ASC""",
+            (latest_date,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
