@@ -230,6 +230,20 @@ class AuthMiddleware:
             await response(scope, receive, send)
             return
 
+        # Defense-in-depth: re-verify domain even after JWT passes
+        from auth import ALLOWED_DOMAIN
+        user_email = user.get("email", "").lower().strip()
+        if not user_email.endswith(f"@{ALLOWED_DOMAIN}"):
+            import logging as _log
+            _log.getLogger("auth").warning(
+                f"Middleware blocked non-{ALLOWED_DOMAIN} session: {user_email}"
+            )
+            # Clear the invalid cookie
+            response = RedirectResponse(url="/login?error=domain", status_code=302)
+            response.delete_cookie(key=COOKIE_NAME, path="/")
+            await response(scope, receive, send)
+            return
+
         await self.app(scope, receive, send)
 
 

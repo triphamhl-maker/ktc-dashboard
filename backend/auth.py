@@ -53,9 +53,15 @@ def create_session_token(user_info: Dict) -> str:
 
 
 def verify_session_token(token: str) -> Optional[Dict]:
-    """Verify and decode a JWT session token. Returns user info or None."""
+    """Verify and decode a JWT session token. Returns user info or None.
+    Also re-validates the email domain as defense-in-depth."""
     try:
         payload = jwt.decode(token, SESSION_SECRET, algorithms=["HS256"])
+        # Defense-in-depth: re-validate domain on EVERY request
+        email = payload.get("email", "").lower().strip()
+        if not email.endswith(f"@{ALLOWED_DOMAIN}"):
+            logger.warning(f"Session token with non-{ALLOWED_DOMAIN} email rejected: {email}")
+            return None
         return payload
     except jwt.ExpiredSignatureError:
         logger.debug("Session token expired")
@@ -165,9 +171,15 @@ async def auth_callback(request: Request, code: str = "", error: str = ""):
             user_info = userinfo_resp.json()
 
         email = user_info.get("email", "").lower().strip()
-        logger.info(f"OAuth login attempt: {email}")
+        hd = user_info.get("hd", "").lower().strip()
+        logger.info(f"OAuth login attempt: {email} (hd={hd})")
 
-        # Validate email domain
+        # Validate hosted domain claim from Google (primary check)
+        if hd != ALLOWED_DOMAIN:
+            logger.warning(f"Rejected login — hd claim '{hd}' is not {ALLOWED_DOMAIN}: {email}")
+            return RedirectResponse(url="/login?error=domain", status_code=302)
+
+        # Validate email domain (defense-in-depth)
         if not email.endswith(f"@{ALLOWED_DOMAIN}"):
             logger.warning(f"Rejected login from non-{ALLOWED_DOMAIN} email: {email}")
             return RedirectResponse(url="/login?error=domain", status_code=302)
