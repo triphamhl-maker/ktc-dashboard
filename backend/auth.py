@@ -109,8 +109,6 @@ async def auth_login(request: Request):
         # Restrict to ghn.vn domain in Google's consent screen
         "hd": ALLOWED_DOMAIN,
     }
-    query = "&".join(f"{k}={httpx.URL('', params={k: v}).params}" for k, v in params.items())
-    # Build URL properly
     from urllib.parse import urlencode
     auth_url = f"{GOOGLE_AUTH_URL}?{urlencode(params)}"
     return RedirectResponse(url=auth_url, status_code=302)
