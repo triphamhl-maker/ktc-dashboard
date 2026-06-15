@@ -184,38 +184,53 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
         return await call_next(request)
 
 
-# ── Authentication Middleware ──────────────────────────────
+# ── Authentication Middleware (Pure ASGI) ──────────────────
 
-class AuthMiddleware(BaseHTTPMiddleware):
-    """Require authentication on all routes except public paths."""
+class AuthMiddleware:
+    """Require authentication on all routes except public paths.
+    Uses pure ASGI to avoid BaseHTTPMiddleware issues with redirects."""
 
-    async def dispatch(self, request: Request, call_next):
-        path = request.url.path
+    def __init__(self, app):
+        self.app = app
+
+    async def __call__(self, scope, receive, send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        path = scope["path"]
 
         # Allow public paths (login, auth callbacks, static assets)
         if path in PUBLIC_PATHS:
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
         if any(path.startswith(p) for p in PUBLIC_PREFIXES):
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         # Allow static assets (CSS, JS, fonts, images) without auth
         static_exts = ('.css', '.js', '.woff', '.woff2', '.ttf', '.png', '.jpg', '.svg', '.ico')
         if any(path.endswith(ext) for ext in static_exts):
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
-        # Check authentication
+        # Check authentication via cookie
+        from starlette.requests import Request as StarletteRequest
+        request = StarletteRequest(scope, receive)
         user = get_current_user(request)
+
         if not user:
-            # For API calls, return 401 JSON
             if path.startswith("/api/"):
-                return JSONResponse(
+                response = JSONResponse(
                     status_code=401,
                     content={"detail": "Not authenticated"},
                 )
-            # For page requests, redirect to login
-            return RedirectResponse(url="/login", status_code=302)
+            else:
+                response = RedirectResponse(url="/login", status_code=302)
+            await response(scope, receive, send)
+            return
 
-        return await call_next(request)
+        await self.app(scope, receive, send)
 
 
 # ── Apply Middleware (order matters: last added = first executed) ──
