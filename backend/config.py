@@ -5,6 +5,7 @@ Data source: Google Sheets (published CSV export).
 """
 
 import os
+import re
 import json
 from pathlib import Path
 
@@ -15,9 +16,17 @@ DATA_DIR.mkdir(exist_ok=True)
 DB_PATH = DATA_DIR / "backlog.db"
 CONFIG_FILE = DATA_DIR / "config.json"
 
-# Google Sheet configuration
-SHEET_ID = "16nhZJyAiCX7xzBujieAF1AOas6bgh2-4X6ePQixWHJE"
-SHEET_GID = "0"
+# Google Sheet configuration — read from environment variables
+SHEET_ID = os.environ.get("SHEET_ID", "")
+SHEET_GID = os.environ.get("SHEET_GID", "0")
+
+# Regex for valid Google Sheet IDs (alphanumeric, hyphens, underscores)
+SHEET_ID_PATTERN = re.compile(r'^[a-zA-Z0-9_-]{10,80}$')
+
+
+def validate_sheet_id(sheet_id: str) -> bool:
+    """Validate that a sheet ID only contains safe characters."""
+    return bool(SHEET_ID_PATTERN.match(sheet_id))
 
 # Default configuration
 DEFAULT_CONFIG = {
@@ -97,6 +106,8 @@ class AppConfig:
 
     @sheet_id.setter
     def sheet_id(self, value: str):
+        if not validate_sheet_id(value):
+            raise ValueError("Invalid sheet_id format")
         self._config["sheet_id"] = value
         self._save()
 
@@ -116,6 +127,17 @@ class AppConfig:
     def to_dict(self) -> dict:
         """Return safe config."""
         return dict(self._config)
+
+    def to_safe_dict(self) -> dict:
+        """Return config without sensitive fields for public API."""
+        safe = dict(self._config)
+        # Remove potentially sensitive fields
+        safe.pop("user_agent", None)
+        # Mask sheet_id (show only last 4 chars)
+        sid = safe.get("sheet_id", "")
+        if len(sid) > 4:
+            safe["sheet_id"] = "***" + sid[-4:]
+        return safe
 
 
 # Singleton

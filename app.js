@@ -199,6 +199,15 @@ document.addEventListener('DOMContentLoaded', () => {
         }).format(n);
     };
 
+    // ─── XSS Protection ──────────────────────────────────────
+    const escapeHtml = (str) => {
+        if (str === null || str === undefined) return '';
+        const s = String(str);
+        const div = document.createElement('div');
+        div.appendChild(document.createTextNode(s));
+        return div.innerHTML;
+    };
+
     // ─── Animated Counter ─────────────────────────────────────
     const animateValue = (el, target, suffix = '', decimals = 0, duration = 900) => {
         const raw = el.textContent.replace(/[^\d.,-]/g, '').replace(/\./g, '').replace(',', '.');
@@ -220,7 +229,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const renderChange = (el, value, suffix = '', invert = false) => {
         if (!el) return;
         if (value === 0 || value === null || value === undefined) {
-            el.innerHTML = '<span class="neutral">—</span>';
+            el.textContent = '—';
             el.className = 'kpi-change neutral';
             return;
         }
@@ -344,7 +353,11 @@ document.addEventListener('DOMContentLoaded', () => {
             slaLabel = 'Cảnh báo';
         }
 
-        kpiSlaStatus.innerHTML = `<span class="sla-pill ${slaStatus}">${slaLabel}</span>`;
+        kpiSlaStatus.textContent = '';
+        const slaPill = document.createElement('span');
+        slaPill.className = `sla-pill ${slaStatus}`;
+        slaPill.textContent = slaLabel;
+        kpiSlaStatus.appendChild(slaPill);
 
         // Backlog card state
         kpiBacklogCard.classList.remove('sla-safe', 'sla-warning', 'sla-danger');
@@ -692,7 +705,13 @@ document.addEventListener('DOMContentLoaded', () => {
             tableBody.innerHTML = '';
 
             if (!rows || rows.length === 0) {
-                tableBody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-muted);">Chưa có dữ liệu. Crawler đang tải dữ liệu từ Google Sheets...</td></tr>';
+                const emptyRow = document.createElement('tr');
+                const emptyTd = document.createElement('td');
+                emptyTd.colSpan = 6;
+                emptyTd.style.cssText = 'text-align:center;padding:40px;color:var(--text-muted);';
+                emptyTd.textContent = 'Chưa có dữ liệu. Crawler đang tải dữ liệu từ Google Sheets...';
+                emptyRow.appendChild(emptyTd);
+                tableBody.appendChild(emptyRow);
                 tableInfo.textContent = '0 dòng';
                 tablePagination.innerHTML = '';
                 return;
@@ -704,18 +723,28 @@ document.addEventListener('DOMContentLoaded', () => {
 
                 const pctDisplay = (row.percent_volume * 100).toFixed(2);
                 const ltDisplay = row.lead_time.toFixed(1);
-                const statusHtml = row.is_backlog
-                    ? '<span class="status-badge backlog">Backlog</span>'
-                    : '<span class="status-badge safe">OK</span>';
 
-                tr.innerHTML = `
-                    <td>${row.time_date}</td>
-                    <td>${row.aging_bucket}</td>
-                    <td class="text-right">${formatNum(row.volume)}</td>
-                    <td class="text-right">${pctDisplay}%</td>
-                    <td class="text-right">${ltDisplay}h</td>
-                    <td class="text-center">${statusHtml}</td>
-                `;
+                const createTd = (text, cls) => {
+                    const td = document.createElement('td');
+                    if (cls) td.className = cls;
+                    td.textContent = text;
+                    return td;
+                };
+
+                tr.appendChild(createTd(row.time_date));
+                tr.appendChild(createTd(row.aging_bucket));
+                tr.appendChild(createTd(formatNum(row.volume), 'text-right'));
+                tr.appendChild(createTd(pctDisplay + '%', 'text-right'));
+                tr.appendChild(createTd(ltDisplay + 'h', 'text-right'));
+
+                const statusTd = document.createElement('td');
+                statusTd.className = 'text-center';
+                const badge = document.createElement('span');
+                badge.className = row.is_backlog ? 'status-badge backlog' : 'status-badge safe';
+                badge.textContent = row.is_backlog ? 'Backlog' : 'OK';
+                statusTd.appendChild(badge);
+                tr.appendChild(statusTd);
+
                 tableBody.appendChild(tr);
             });
 
@@ -728,7 +757,14 @@ document.addEventListener('DOMContentLoaded', () => {
             renderPagination(page, total_pages);
         } catch (e) {
             console.error('Table render error:', e);
-            tableBody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:40px;color:var(--text-muted);">Lỗi tải dữ liệu</td></tr>';
+            tableBody.innerHTML = '';
+            const errRow = document.createElement('tr');
+            const errTd = document.createElement('td');
+            errTd.colSpan = 6;
+            errTd.style.cssText = 'text-align:center;padding:40px;color:var(--text-muted);';
+            errTd.textContent = 'Lỗi tải dữ liệu';
+            errRow.appendChild(errTd);
+            tableBody.appendChild(errRow);
         }
     };
 
@@ -787,7 +823,7 @@ document.addEventListener('DOMContentLoaded', () => {
             crawlerDetail.textContent = 'Đang crawl dữ liệu...';
         } else if (status.last_error) {
             crawlerDot.className = 'crawler-status-dot error';
-            crawlerDetail.textContent = `Lỗi: ${status.last_error.substring(0, 60)}`;
+            crawlerDetail.textContent = `Lỗi: ${String(status.last_error).substring(0, 60).replace(/[<>"'&]/g, '')}`;
         } else if (status.last_run_at) {
             crawlerDot.className = 'crawler-status-dot ready';
             crawlerDetail.textContent = `Cập nhật: ${timeAgo(status.last_run_at)}`;
