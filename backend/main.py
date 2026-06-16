@@ -129,8 +129,9 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         )
         response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
         # Remove server identification headers
-        response.headers.pop("server", None)
-        response.headers.pop("x-powered-by", None)
+        for header_name in ("server", "x-powered-by"):
+            if header_name in response.headers:
+                del response.headers[header_name]
         return response
 
 

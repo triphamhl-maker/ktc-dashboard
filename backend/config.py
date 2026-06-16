@@ -23,7 +23,9 @@ DB_PATH = DATA_DIR / "backlog.db"
 CONFIG_FILE = DATA_DIR / "config.json"
 
 # Google Sheet configuration — read from environment variables
-SHEET_ID = os.environ.get("SHEET_ID", "")
+# Fallback to hardcoded Sheet ID when env var is not set
+_DEFAULT_SHEET_ID = "16nhZJyAiCX7xzBujieAF1AOas6bgh2-4X6ePQixWHJE"
+SHEET_ID = os.environ.get("SHEET_ID", "") or _DEFAULT_SHEET_ID
 SHEET_GID = os.environ.get("SHEET_GID", "0")
 
 # Regex for valid Google Sheet IDs (alphanumeric, hyphens, underscores)
