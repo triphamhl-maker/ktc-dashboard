@@ -15,6 +15,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const tableLimit = 20;
     let tableSearch = '';
 
+    // Fill Rate state
+    let fillRatePage = 1;
+    const fillRateLimit = 20;
+    let fillRateSearch = '';
+
     // Date range filter state (null = no filter / all data)
     let dateStart = null;
     let dateEnd = null;
@@ -55,6 +60,20 @@ document.addEventListener('DOMContentLoaded', () => {
     const tableSearch_el = $('tableSearch');
     const tableInfo = $('tableInfo');
     const tablePagination = $('tablePagination');
+
+    // Fill Rate DOM
+    const kpiFillWeightValue = $('kpiFillWeightValue');
+    const kpiFillWeightNote = $('kpiFillWeightNote');
+    const kpiFillOrderValue = $('kpiFillOrderValue');
+    const kpiFillOrderNote = $('kpiFillOrderNote');
+    const kpiOverweightValue = $('kpiOverweightValue');
+    const kpiOverweightNote = $('kpiOverweightNote');
+    const overweightBody = $('overweightBody');
+    const fillRateBody = $('fillRateBody');
+    const fillRateTableCount = $('fillRateTableCount');
+    const fillRateInfo = $('fillRateInfo');
+    const fillRatePagination = $('fillRatePagination');
+    const fillRateSearch_el = $('fillRateSearch');
 
     // Other
     const themeToggle = $('themeToggle');
@@ -125,6 +144,7 @@ document.addEventListener('DOMContentLoaded', () => {
         // Deactivate all presets
         presetBtns.forEach(b => b.classList.remove('active'));
         tablePage = 1;
+        fillRatePage = 1;
         refreshDashboard();
     });
 
@@ -137,6 +157,7 @@ document.addEventListener('DOMContentLoaded', () => {
         presetBtns.forEach(b => b.classList.remove('active'));
         document.querySelector('.preset-btn[data-days="0"]')?.classList.add('active');
         tablePage = 1;
+        fillRatePage = 1;
         refreshDashboard();
     });
 
@@ -163,6 +184,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 dateEndInput.value = dateEnd;
             }
             tablePage = 1;
+            fillRatePage = 1;
             refreshDashboard();
         });
     });
@@ -293,17 +315,36 @@ document.addEventListener('DOMContentLoaded', () => {
             if (dateEnd) p.set('end_date', dateEnd);
             return fetch(`/api/snapshots?${p}`).then(r => r.json());
         },
+        // Fill Rate APIs
+        fillRateOverview: () => {
+            const p = buildDateParams();
+            return fetch(`/api/fill-rate/overview?${p}`).then(r => r.json());
+        },
+        fillRateTopOverweight: () => {
+            const p = buildDateParams();
+            p.set('limit', '10');
+            return fetch(`/api/fill-rate/top-overweight?${p}`).then(r => r.json());
+        },
+        fillRateList: (page, limit, search) => {
+            const p = new URLSearchParams({ page, limit });
+            if (search) p.set('search', search);
+            if (dateStart) p.set('start_date', dateStart);
+            if (dateEnd) p.set('end_date', dateEnd);
+            return fetch(`/api/fill-rate/list?${p}`).then(r => r.json());
+        },
     };
 
     // ─── Dashboard Refresh ────────────────────────────────────
     const refreshDashboard = async () => {
         try {
-            const [overview, trend, dist, daily, crawlerSt] = await Promise.all([
+            const [overview, trend, dist, daily, crawlerSt, frOverview, frTop] = await Promise.all([
                 api.overview(),
                 api.trend(),
                 api.distribution(),
                 api.backlogDaily(),
                 api.crawlerStatus(),
+                api.fillRateOverview(),
+                api.fillRateTopOverweight(),
             ]);
 
             cachedOverview = overview;
@@ -316,6 +357,11 @@ document.addEventListener('DOMContentLoaded', () => {
             renderCrawlerStatus(crawlerSt);
             renderTable();
             updateTimestamp();
+
+            // Fill Rate
+            renderFillRateKPIs(frOverview);
+            renderOverweightTable(frTop);
+            renderFillRateTable();
         } catch (e) {
             console.error('[Dashboard] Refresh failed:', e);
             crawlerDetail.textContent = 'Lỗi kết nối backend';
@@ -814,6 +860,222 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 300);
     });
 
+    // ─── Fill Rate KPIs ───────────────────────────────────────
+    const renderFillRateKPIs = (data) => {
+        if (!data || !data.total_trips) {
+            kpiFillWeightValue.textContent = '—';
+            kpiFillOrderValue.textContent = '—';
+            kpiOverweightValue.textContent = '—';
+            return;
+        }
+
+        animateValue(kpiFillWeightValue, data.avg_fill_rate_weight, '%', 1);
+        animateValue(kpiFillOrderValue, data.avg_fill_rate_order, '%', 1);
+        animateValue(kpiOverweightValue, data.overweight_count, '', 0);
+
+        // Update notes
+        const dateLabel = data.latest_date || '';
+        kpiFillWeightNote.textContent = `${formatNum(data.total_trips)} chuyến — ${dateLabel}`;
+        kpiFillOrderNote.textContent = `${formatNum(data.total_trips)} chuyến — ${dateLabel}`;
+        kpiOverweightNote.textContent = data.overweight_count > 0
+            ? `⚠ Cần kiểm tra vượt tải!`
+            : 'Không có chuyến vượt tải';
+
+        // Highlight overweight card
+        const owCard = $('kpiOverweight');
+        if (data.overweight_count > 0) {
+            owCard.classList.add('sla-danger');
+        } else {
+            owCard.classList.remove('sla-danger');
+        }
+    };
+
+    // ─── Top 10 Overweight Table ──────────────────────────────
+    const renderOverweightTable = (rows) => {
+        overweightBody.innerHTML = '';
+
+        if (!rows || rows.length === 0) {
+            const tr = document.createElement('tr');
+            const td = document.createElement('td');
+            td.colSpan = 8;
+            td.style.cssText = 'text-align:center;padding:40px;color:var(--text-muted);';
+            td.textContent = '✅ Không có chuyến tải nào vượt 100% khối lượng';
+            tr.appendChild(td);
+            overweightBody.appendChild(tr);
+            return;
+        }
+
+        rows.forEach((row, idx) => {
+            const tr = document.createElement('tr');
+            tr.className = 'row-overweight';
+
+            const createTd = (text, cls) => {
+                const td = document.createElement('td');
+                if (cls) td.className = cls;
+                td.textContent = text;
+                return td;
+            };
+
+            tr.appendChild(createTd(idx + 1));
+            tr.appendChild(createTd(row.trip_date));
+            tr.appendChild(createTd(row.trip_code));
+            tr.appendChild(createTd(row.route_name || '—'));
+            tr.appendChild(createTd(row.license_plate || '—'));
+            tr.appendChild(createTd(formatNum(row.capacity), 'text-right'));
+
+            // Fill Rate Weight — badge
+            const frwTd = document.createElement('td');
+            frwTd.className = 'text-right';
+            const frwBadge = document.createElement('span');
+            frwBadge.className = 'fill-rate-badge overweight';
+            frwBadge.textContent = formatNum(row.fill_rate_weight, 2) + '%';
+            frwTd.appendChild(frwBadge);
+            tr.appendChild(frwTd);
+
+            // Fill Rate Order
+            const froTd = document.createElement('td');
+            froTd.className = 'text-right';
+            froTd.textContent = formatNum(row.fill_rate_order, 2) + '%';
+            tr.appendChild(froTd);
+
+            overweightBody.appendChild(tr);
+        });
+    };
+
+    // ─── Fill Rate Data Table ─────────────────────────────────
+    const renderFillRateTable = async () => {
+        try {
+            const data = await api.fillRateList(fillRatePage, fillRateLimit, fillRateSearch);
+            const { rows, total, page, total_pages } = data;
+
+            fillRateTableCount.textContent = `${formatNum(total)} chuyến`;
+            fillRateBody.innerHTML = '';
+
+            if (!rows || rows.length === 0) {
+                const tr = document.createElement('tr');
+                const td = document.createElement('td');
+                td.colSpan = 9;
+                td.style.cssText = 'text-align:center;padding:40px;color:var(--text-muted);';
+                td.textContent = 'Chưa có dữ liệu fill rate. Crawler đang tải...';
+                tr.appendChild(td);
+                fillRateBody.appendChild(tr);
+                fillRateInfo.textContent = '0 chuyến';
+                fillRatePagination.innerHTML = '';
+                return;
+            }
+
+            rows.forEach(row => {
+                const tr = document.createElement('tr');
+                const isOverweight = row.fill_rate_weight > 100;
+                if (isOverweight) tr.className = 'row-overweight';
+
+                const createTd = (text, cls) => {
+                    const td = document.createElement('td');
+                    if (cls) td.className = cls;
+                    td.textContent = text;
+                    return td;
+                };
+
+                tr.appendChild(createTd(row.trip_date));
+                tr.appendChild(createTd(row.trip_code));
+                tr.appendChild(createTd(row.route_name || '—'));
+                tr.appendChild(createTd(row.vehicle_type || '—'));
+                tr.appendChild(createTd(row.license_plate || '—'));
+                tr.appendChild(createTd(formatNum(row.capacity), 'text-right'));
+
+                // Fill Rate Weight — with badge
+                const frwTd = document.createElement('td');
+                frwTd.className = 'text-right';
+                const frwBadge = document.createElement('span');
+                if (isOverweight) {
+                    frwBadge.className = 'fill-rate-badge overweight';
+                } else if (row.fill_rate_weight >= 80) {
+                    frwBadge.className = 'fill-rate-badge warning';
+                } else {
+                    frwBadge.className = 'fill-rate-badge normal';
+                }
+                frwBadge.textContent = formatNum(row.fill_rate_weight, 2) + '%';
+                frwTd.appendChild(frwBadge);
+                tr.appendChild(frwTd);
+
+                // Fill Rate Order
+                tr.appendChild(createTd(formatNum(row.fill_rate_order, 2) + '%', 'text-right'));
+
+                // Status badge
+                const statusTd = document.createElement('td');
+                statusTd.className = 'text-center';
+                const badge = document.createElement('span');
+                if (isOverweight) {
+                    badge.className = 'status-badge overweight';
+                    badge.textContent = 'Vượt tải';
+                } else if (row.fill_rate_weight >= 80) {
+                    badge.className = 'status-badge medium';
+                    badge.textContent = 'Cao';
+                } else {
+                    badge.className = 'status-badge good';
+                    badge.textContent = 'Bình thường';
+                }
+                statusTd.appendChild(badge);
+                tr.appendChild(statusTd);
+
+                fillRateBody.appendChild(tr);
+            });
+
+            // Pagination info
+            const start = (page - 1) * fillRateLimit + 1;
+            const end = Math.min(page * fillRateLimit, total);
+            fillRateInfo.textContent = `Hiển thị ${start}—${end} / ${formatNum(total)}`;
+
+            // Pagination buttons
+            renderFillRatePagination(page, total_pages);
+        } catch (e) {
+            console.error('[FillRate] Table render error:', e);
+        }
+    };
+
+    const renderFillRatePagination = (current, totalPages) => {
+        fillRatePagination.innerHTML = '';
+        if (totalPages <= 1) return;
+
+        const prevBtn = document.createElement('button');
+        prevBtn.className = 'page-btn';
+        prevBtn.innerHTML = '‹';
+        prevBtn.disabled = current <= 1;
+        prevBtn.addEventListener('click', () => { fillRatePage = current - 1; renderFillRateTable(); });
+        fillRatePagination.appendChild(prevBtn);
+
+        const maxVisible = 5;
+        let startPage = Math.max(1, current - Math.floor(maxVisible / 2));
+        let endPage = Math.min(totalPages, startPage + maxVisible - 1);
+        if (endPage - startPage < maxVisible - 1) startPage = Math.max(1, endPage - maxVisible + 1);
+
+        for (let i = startPage; i <= endPage; i++) {
+            const btn = document.createElement('button');
+            btn.className = 'page-btn' + (i === current ? ' active' : '');
+            btn.textContent = i;
+            btn.addEventListener('click', () => { fillRatePage = i; renderFillRateTable(); });
+            fillRatePagination.appendChild(btn);
+        }
+
+        const nextBtn = document.createElement('button');
+        nextBtn.className = 'page-btn';
+        nextBtn.innerHTML = '›';
+        nextBtn.disabled = current >= totalPages;
+        nextBtn.addEventListener('click', () => { fillRatePage = current + 1; renderFillRateTable(); });
+        fillRatePagination.appendChild(nextBtn);
+    };
+
+    // Fill Rate search
+    let fillRateSearchDebounce = null;
+    fillRateSearch_el?.addEventListener('input', (e) => {
+        clearTimeout(fillRateSearchDebounce);
+        fillRateSearchDebounce = setTimeout(() => {
+            fillRateSearch = e.target.value.trim();
+            fillRatePage = 1;
+            renderFillRateTable();
+        }, 300);
+    });
+
     // ─── Crawler Status ───────────────────────────────────────
     const renderCrawlerStatus = (status) => {
         if (!status) return;
@@ -870,3 +1132,4 @@ document.addEventListener('DOMContentLoaded', () => {
     refreshDashboard();
     startAutoRefresh();
 });
+

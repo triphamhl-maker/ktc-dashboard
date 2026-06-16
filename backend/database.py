@@ -61,12 +61,35 @@ async def init_database():
                 error_message TEXT
             );
 
+            CREATE TABLE IF NOT EXISTS fill_rate (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                trip_date TEXT NOT NULL,
+                trip_code TEXT NOT NULL,
+                route_code TEXT,
+                route_name TEXT,
+                vehicle_type TEXT,
+                route_detail TEXT,
+                license_plate TEXT,
+                capacity INTEGER DEFAULT 0,
+                std_orders INTEGER DEFAULT 0,
+                std_weight INTEGER DEFAULT 0,
+                actual_orders INTEGER DEFAULT 0,
+                fill_rate_weight REAL DEFAULT 0,
+                fill_rate_order REAL DEFAULT 0,
+                crawled_at DATETIME DEFAULT (datetime('now')),
+                UNIQUE(trip_date, trip_code)
+            );
+
             CREATE INDEX IF NOT EXISTS idx_snapshot_time
                 ON backlog_snapshots(time_date);
             CREATE INDEX IF NOT EXISTS idx_snapshot_bucket_date
                 ON backlog_snapshots(aging_bucket, time_date);
             CREATE INDEX IF NOT EXISTS idx_kpi_crawled
                 ON kpi_history(crawled_at);
+            CREATE INDEX IF NOT EXISTS idx_fill_rate_date
+                ON fill_rate(trip_date);
+            CREATE INDEX IF NOT EXISTS idx_fill_rate_weight
+                ON fill_rate(fill_rate_weight);
         """)
         await db.commit()
         logger.info("[DB] Schema initialized")
@@ -82,6 +105,7 @@ async def reset_database():
             DROP TABLE IF EXISTS backlog_snapshots;
             DROP TABLE IF EXISTS kpi_history;
             DROP TABLE IF EXISTS crawl_log;
+            DROP TABLE IF EXISTS fill_rate;
         """)
         await db.commit()
         logger.info("[DB] Tables dropped for schema upgrade")
@@ -597,6 +621,186 @@ async def get_distribution_latest() -> List[Dict]:
                WHERE time_date = ?
                ORDER BY aging_bucket ASC""",
             (latest_date,),
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows]
+    finally:
+        await db.close()
+
+
+# ── Fill Rate Functions ────────────────────────────────────
+
+async def insert_fill_rate_batch(rows: List[Dict]):
+    """Insert or update a batch of fill rate rows."""
+    if not rows:
+        return 0
+
+    db = await get_db()
+    try:
+        now = datetime.utcnow().isoformat()
+        count = 0
+
+        for row in rows:
+            # Clamp integers to SQLite max to prevent overflow
+            _max_int = 2**63 - 1
+            _clamp = lambda v: min(int(v or 0), _max_int)
+
+            await db.execute(
+                """INSERT OR REPLACE INTO fill_rate
+                   (trip_date, trip_code, route_code, route_name,
+                    vehicle_type, route_detail, license_plate,
+                    capacity, std_orders, std_weight,
+                    actual_orders, fill_rate_weight, fill_rate_order, crawled_at)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    row.get("trip_date", ""),
+                    row.get("trip_code", ""),
+                    row.get("route_code", ""),
+                    row.get("route_name", ""),
+                    row.get("vehicle_type", ""),
+                    row.get("route_detail", ""),
+                    row.get("license_plate", ""),
+                    _clamp(row.get("capacity", 0)),
+                    _clamp(row.get("std_orders", 0)),
+                    _clamp(row.get("std_weight", 0)),
+                    _clamp(row.get("actual_orders", 0)),
+                    row.get("fill_rate_weight", 0.0),
+                    row.get("fill_rate_order", 0.0),
+                    now,
+                ),
+            )
+            count += 1
+
+        await db.commit()
+        logger.info(f"[DB] Fill rate: upserted {count} records")
+        return count
+    finally:
+        await db.close()
+
+
+async def get_fill_rate_overview(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> Dict:
+    """Get fill rate KPI overview — averages and overweight count."""
+    db = await get_db()
+    try:
+        conds = []
+        params = []
+        if start_date:
+            conds.append("trip_date >= ?")
+            params.append(start_date)
+        if end_date:
+            conds.append("trip_date <= ?")
+            params.append(end_date)
+        where = ("WHERE " + " AND ".join(conds)) if conds else ""
+
+        cursor = await db.execute(
+            f"""SELECT
+                COUNT(*) as total_trips,
+                AVG(fill_rate_weight) as avg_fill_weight,
+                AVG(fill_rate_order) as avg_fill_order,
+                SUM(CASE WHEN fill_rate_weight > 100 THEN 1 ELSE 0 END) as overweight_count,
+                MAX(trip_date) as latest_date,
+                MIN(trip_date) as earliest_date
+               FROM fill_rate {where}""",
+            params,
+        )
+        data = dict(await cursor.fetchone())
+        total = data.get("total_trips") or 0
+        if total == 0:
+            return {}
+
+        return {
+            "total_trips": total,
+            "avg_fill_rate_weight": round(data.get("avg_fill_weight") or 0, 2),
+            "avg_fill_rate_order": round(data.get("avg_fill_order") or 0, 2),
+            "overweight_count": data.get("overweight_count") or 0,
+            "latest_date": data.get("latest_date"),
+            "earliest_date": data.get("earliest_date"),
+        }
+    finally:
+        await db.close()
+
+
+async def get_fill_rate_list(
+    page: int = 1,
+    limit: int = 50,
+    search: Optional[str] = None,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> tuple:
+    """Get fill rate rows (paginated, searchable, date-filtered)."""
+    db = await get_db()
+    try:
+        conditions = []
+        params = []
+
+        if search:
+            conditions.append(
+                "(trip_code LIKE ? OR route_name LIKE ? OR license_plate LIKE ? OR route_detail LIKE ?)"
+            )
+            params.extend([f"%{search}%"] * 4)
+        if start_date:
+            conditions.append("trip_date >= ?")
+            params.append(start_date)
+        if end_date:
+            conditions.append("trip_date <= ?")
+            params.append(end_date)
+
+        where = " AND ".join(conditions) if conditions else "1=1"
+
+        cursor = await db.execute(
+            f"SELECT COUNT(*) FROM fill_rate WHERE {where}",
+            params,
+        )
+        total = (await cursor.fetchone())[0]
+
+        offset = (page - 1) * limit
+        cursor = await db.execute(
+            f"""SELECT id, trip_date, trip_code, route_code, route_name,
+                       vehicle_type, route_detail, license_plate,
+                       capacity, std_orders, std_weight,
+                       actual_orders, fill_rate_weight, fill_rate_order
+                FROM fill_rate
+                WHERE {where}
+                ORDER BY trip_date DESC, fill_rate_weight DESC
+                LIMIT ? OFFSET ?""",
+            params + [limit, offset],
+        )
+        rows = await cursor.fetchall()
+        return [dict(r) for r in rows], total
+    finally:
+        await db.close()
+
+
+async def get_fill_rate_top_overweight(
+    limit: int = 10,
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> List[Dict]:
+    """Get top N trips with fill_rate_weight > 100%, sorted by descending rate."""
+    db = await get_db()
+    try:
+        conds = ["fill_rate_weight > 100"]
+        params = []
+        if start_date:
+            conds.append("trip_date >= ?")
+            params.append(start_date)
+        if end_date:
+            conds.append("trip_date <= ?")
+            params.append(end_date)
+        where = " AND ".join(conds)
+
+        cursor = await db.execute(
+            f"""SELECT id, trip_date, trip_code, route_code, route_name,
+                       vehicle_type, license_plate, capacity,
+                       fill_rate_weight, fill_rate_order
+                FROM fill_rate
+                WHERE {where}
+                ORDER BY fill_rate_weight DESC
+                LIMIT ?""",
+            params + [limit],
         )
         rows = await cursor.fetchall()
         return [dict(r) for r in rows]

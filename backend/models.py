@@ -125,3 +125,56 @@ class SLASummary(BaseModel):
     days_above_threshold: int = 0
     total_days: int = 0
     daily_details: List[SLADailyDetail] = []
+
+
+# ── Fill Rate Models ────────────────────────────────────────
+
+class FillRateOverview(BaseModel):
+    """Fill rate KPI summary."""
+    total_trips: int = 0
+    avg_fill_rate_weight: float = 0.0
+    avg_fill_rate_order: float = 0.0
+    overweight_count: int = 0
+    latest_date: Optional[str] = None
+    earliest_date: Optional[str] = None
+
+
+class FillRateRow(BaseModel):
+    """Single fill rate trip record."""
+    id: Optional[int] = None
+    trip_date: str = ""
+    trip_code: str = ""
+    route_code: str = ""
+    route_name: str = ""
+    vehicle_type: str = ""
+    route_detail: str = ""
+    license_plate: str = ""
+    capacity: int = 0
+    std_orders: int = 0
+    std_weight: int = 0
+    actual_orders: int = 0
+    fill_rate_weight: float = 0.0
+    fill_rate_order: float = 0.0
+
+
+class FillRateListResponse(BaseModel):
+    """Paginated fill rate response."""
+    rows: List[FillRateRow] = []
+    total: int = 0
+    page: int = 1
+    limit: int = 50
+    total_pages: int = 0
+
+
+class FillRateTopRow(BaseModel):
+    """Top overweight trip record (for warning table)."""
+    id: Optional[int] = None
+    trip_date: str = ""
+    trip_code: str = ""
+    route_code: str = ""
+    route_name: str = ""
+    vehicle_type: str = ""
+    license_plate: str = ""
+    capacity: int = 0
+    fill_rate_weight: float = 0.0
+    fill_rate_order: float = 0.0

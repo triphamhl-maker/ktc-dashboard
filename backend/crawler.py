@@ -339,9 +339,17 @@ def _safe_int(val) -> int:
     if not val:
         return 0
     try:
+        # Take only first line if multiline
+        first_line = str(val).strip().split('\n')[0].strip()
+        # Remove "(1) " prefix if present
+        first_line = re.sub(r'^\(\d+\)\s*', '', first_line)
         # Remove thousand separators (dots in VN format) — but only for pure integers
-        cleaned = re.sub(r'[^\d]', '', str(val))
-        return int(cleaned) if cleaned else 0
+        cleaned = re.sub(r'[^\d]', '', first_line)
+        if not cleaned:
+            return 0
+        result = int(cleaned)
+        # Cap at SQLite max integer to prevent overflow
+        return min(result, 2**63 - 1)
     except (ValueError, TypeError):
         return 0
 
@@ -351,5 +359,236 @@ def _safe_float(val) -> float:
         return 0.0
     try:
         return float(str(val).replace(',', '.').strip())
+    except (ValueError, TypeError):
+        return 0.0
+
+
+# ── Fill Rate Crawler ──────────────────────────────────────
+
+FILL_RATE_SHEET_ID = "17ORtcqKj0PI1m4CUBGNr-o_ynHoU2cDeDuE-pFIAX9c"
+FILL_RATE_SHEET_GID = "0"
+
+
+class FillRateCrawlerState:
+    """Track fill rate crawler runtime state."""
+    is_running: bool = False
+    last_run_at: Optional[str] = None
+    last_duration_seconds: Optional[float] = None
+    last_records_count: int = 0
+    last_error: Optional[str] = None
+    consecutive_errors: int = 0
+
+
+fill_rate_crawler_state = FillRateCrawlerState()
+
+
+async def crawl_fill_rate_data():
+    """
+    Crawl fill rate data from dedicated Google Sheet.
+    Sheet has 17 columns (A-Q) with multiline cells.
+    Column P = fill rate by weight (final), Column Q = fill rate by orders (final).
+    """
+    from database import insert_fill_rate_batch
+
+    if fill_rate_crawler_state.is_running:
+        logger.warning("Fill rate crawler is already running, skipping...")
+        return
+
+    fill_rate_crawler_state.is_running = True
+    start_time = time_mod.time()
+
+    try:
+        urls = [
+            build_sheet_csv_url(FILL_RATE_SHEET_ID, FILL_RATE_SHEET_GID),
+            build_sheet_tsv_url(FILL_RATE_SHEET_ID, FILL_RATE_SHEET_GID),
+        ]
+
+        headers = {
+            "User-Agent": config.get("user_agent"),
+            "Accept": "text/csv, text/plain, */*",
+        }
+
+        csv_text = None
+        max_retries = 3
+
+        async with httpx.AsyncClient(
+            timeout=config.get("request_timeout_seconds", 30),
+            follow_redirects=True,
+        ) as client:
+            for url in urls:
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        logger.info(f"[FillRate] Trying ({attempt}/{max_retries}): {url[:80]}...")
+                        resp = await client.get(url, headers=headers)
+                        if resp.status_code == 200:
+                            csv_text = resp.text
+                            logger.info(f"[FillRate] Fetched {len(csv_text)} bytes")
+                            break
+                        else:
+                            logger.warning(f"[FillRate] HTTP {resp.status_code}")
+                    except Exception as e:
+                        logger.warning(f"[FillRate] Request failed (attempt {attempt}): {e}")
+                        if attempt < max_retries:
+                            import asyncio
+                            await asyncio.sleep(2 ** attempt)
+                        continue
+                if csv_text:
+                    break
+
+        if not csv_text:
+            fill_rate_crawler_state.last_error = "Could not fetch fill rate sheet"
+            fill_rate_crawler_state.consecutive_errors += 1
+            logger.error("[FillRate] All URLs failed")
+            return
+
+        rows = parse_fill_rate_csv(csv_text)
+
+        if rows:
+            count = await insert_fill_rate_batch(rows)
+            elapsed = time_mod.time() - start_time
+            fill_rate_crawler_state.last_run_at = datetime.utcnow().isoformat()
+            fill_rate_crawler_state.last_duration_seconds = round(elapsed, 2)
+            fill_rate_crawler_state.last_records_count = count
+            fill_rate_crawler_state.last_error = None
+            fill_rate_crawler_state.consecutive_errors = 0
+            logger.info(f"[FillRate] Crawl completed: {count} records in {elapsed:.1f}s")
+        else:
+            fill_rate_crawler_state.last_error = "No valid fill rate data parsed"
+            fill_rate_crawler_state.consecutive_errors += 1
+            logger.warning("[FillRate] CSV fetched but no data parsed")
+
+    except Exception as e:
+        fill_rate_crawler_state.last_error = str(e)
+        fill_rate_crawler_state.consecutive_errors += 1
+        logger.error(f"[FillRate] Crawl failed: {e}", exc_info=True)
+    finally:
+        fill_rate_crawler_state.is_running = False
+
+
+def parse_fill_rate_csv(text: str) -> List[Dict]:
+    """
+    Parse fill rate Google Sheet CSV with 17 columns (A-Q).
+    Columns contain multiline cells (each route stop on separate line).
+
+    Key columns:
+      A: Ngày (date)
+      B: Mã chuyến (trip code)
+      C: Mã lộ trình
+      D: Mã tuyến
+      E: Loại xe
+      F: Lộ trình (multiline)
+      G: Lộ trình từng chặng (multiline)
+      H: Biển số xe
+      I: Tải trọng
+      J: Số đơn tiêu chuẩn
+      K: Số kg tiêu chuẩn
+      L: Số kg quy đổi (multiline)
+      M: Số đơn hàng (multiline)
+      N: Tỷ lệ lấp đầy (KL) chi tiết (multiline)
+      O: Tỷ lệ lấp đầy (đơn) chi tiết (multiline)
+      P: Tỷ lệ lấp đầy (KL quy đổi) final  — e.g. "69,00%"
+      Q: Tỷ lệ lấp đầy (đơn hàng) final    — e.g. "87,00%"
+    """
+    # Strip BOM
+    if text.startswith('\ufeff'):
+        text = text[1:]
+
+    reader = csv.reader(io.StringIO(text))
+    rows_out = []
+
+    # Read and skip header
+    try:
+        header = next(reader)
+    except StopIteration:
+        return []
+
+    # Validate we have enough columns
+    if len(header) < 17:
+        logger.warning(f"[FillRate] Expected 17+ columns, got {len(header)}: {header[:5]}...")
+        return []
+
+    for row in reader:
+        if not row or len(row) < 17:
+            continue
+
+        try:
+            raw_date = row[0].strip()
+            raw_trip_code = row[1].strip()
+
+            if not raw_date or not raw_trip_code:
+                continue
+
+            # Normalize date
+            trip_date = _normalize_date(raw_date)
+            if not trip_date or len(trip_date) < 8:
+                continue
+
+            route_code = row[2].strip() if len(row) > 2 else ""
+            route_name = row[3].strip() if len(row) > 3 else ""
+            vehicle_type = row[4].strip() if len(row) > 4 else ""
+
+            # Route detail — first line only (remove multiline stops)
+            route_detail_raw = row[5].strip() if len(row) > 5 else ""
+            route_detail = route_detail_raw.split('\n')[0].strip() if route_detail_raw else ""
+            # Remove leading "(1) " prefix
+            if route_detail.startswith("(1) "):
+                route_detail = route_detail[4:]
+
+            license_plate = row[7].strip() if len(row) > 7 else ""
+            capacity = _safe_int(row[8]) if len(row) > 8 else 0
+            std_orders = _safe_int(row[9]) if len(row) > 9 else 0
+            std_weight = _safe_int(row[10]) if len(row) > 10 else 0
+            actual_orders = _safe_int(row[12]) if len(row) > 12 else 0
+            # actual_orders is multiline — take first value
+            if isinstance(actual_orders, int) and actual_orders == 0 and len(row) > 12:
+                # Parse first number from multiline
+                first_line = row[12].strip().split('\n')[0].strip()
+                # Remove "(1) " prefix
+                first_line = re.sub(r'^\(\d+\)\s*', '', first_line)
+                actual_orders = _safe_int(first_line)
+
+            # Column P (index 15): fill rate weight final — "69,00%"
+            fill_rate_weight = _parse_vn_percent(row[15]) if len(row) > 15 else 0.0
+
+            # Column Q (index 16): fill rate order final — "87,00%"
+            fill_rate_order = _parse_vn_percent(row[16]) if len(row) > 16 else 0.0
+
+            rows_out.append({
+                "trip_date": trip_date,
+                "trip_code": raw_trip_code,
+                "route_code": route_code,
+                "route_name": route_name,
+                "vehicle_type": vehicle_type,
+                "route_detail": route_detail,
+                "license_plate": license_plate,
+                "capacity": capacity,
+                "std_orders": std_orders,
+                "std_weight": std_weight,
+                "actual_orders": actual_orders,
+                "fill_rate_weight": fill_rate_weight,
+                "fill_rate_order": fill_rate_order,
+            })
+
+        except (IndexError, ValueError) as e:
+            logger.debug(f"[FillRate] Skipping row: {e}")
+            continue
+
+    logger.info(f"[FillRate] Parsed {len(rows_out)} records from CSV")
+    return rows_out
+
+
+def _parse_vn_percent(val: str) -> float:
+    """Parse Vietnamese-format percentage.
+    '69,00%' → 69.0
+    '87,00%' → 87.0
+    '100,50%' → 100.5
+    """
+    if not val:
+        return 0.0
+    val = val.strip().replace('%', '').replace('"', '').strip()
+    # Vietnamese uses comma as decimal separator
+    val = val.replace(',', '.')
+    try:
+        return float(val)
     except (ValueError, TypeError):
         return 0.0

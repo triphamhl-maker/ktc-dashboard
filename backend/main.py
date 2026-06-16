@@ -30,6 +30,7 @@ from models import (
     KPIHistoryPoint, SheetConfigRequest,
     BacklogDailyResponse, BacklogDailyPoint,
     SLASummary, SLADailyDetail,
+    FillRateOverview, FillRateRow, FillRateListResponse, FillRateTopRow,
 )
 from database import (
     init_database, reset_database,
@@ -38,8 +39,9 @@ from database import (
     get_backlog_daily, insert_snapshot_batch,
     get_sla_summary, get_distribution_latest,
     get_snapshot_count,
+    get_fill_rate_overview, get_fill_rate_list, get_fill_rate_top_overweight,
 )
-from crawler import crawl_backlog_data, crawler_state, parse_sheet_csv
+from crawler import crawl_backlog_data, crawler_state, parse_sheet_csv, crawl_fill_rate_data, fill_rate_crawler_state
 from scheduler import (
     setup_scheduler, start_scheduler, stop_scheduler,
     get_next_run_time, update_interval,
@@ -73,7 +75,7 @@ async def lifespan(app: FastAPI):
             logger.error(f"[DB] Reset also failed: {e2}")
 
     # Setup scheduler
-    setup_scheduler(crawl_backlog_data)
+    setup_scheduler(crawl_backlog_data, fill_rate_func=crawl_fill_rate_data)
     start_scheduler()
 
     # Await initial crawl so data is ready before serving requests
@@ -85,6 +87,36 @@ async def lifespan(app: FastAPI):
         logger.warning("[CRAWL] Initial fetch timed out (60s), will retry on schedule")
     except Exception as e:
         logger.warning(f"[CRAWL] Initial fetch failed: {e}, will retry on schedule")
+
+    # Crawl fill rate data
+    logger.info("[CRAWL] Fetching fill rate data from Google Sheets...")
+    try:
+        await asyncio.wait_for(crawl_fill_rate_data(), timeout=60)
+        logger.info("[CRAWL] Fill rate data fetch completed")
+    except asyncio.TimeoutError:
+        logger.warning("[CRAWL] Fill rate fetch timed out (60s), will retry on schedule")
+    except Exception as e:
+        logger.warning(f"[CRAWL] Fill rate fetch failed: {e}, will retry on schedule")
+
+    # Fallback: if DB is still empty after crawl, load from bundled seed CSV
+    try:
+        count = await get_snapshot_count()
+        if count == 0:
+            seed_path = Path(__file__).resolve().parent / "seed_data.csv"
+            if seed_path.exists():
+                logger.info(f"[SEED] DB empty after crawl, loading from {seed_path.name}...")
+                with open(seed_path, "r", encoding="utf-8") as f:
+                    csv_text = f.read()
+                rows = parse_sheet_csv(csv_text)
+                if rows:
+                    seed_count = await insert_snapshot_batch(rows, source="seed_csv")
+                    logger.info(f"[SEED] Loaded {seed_count} records from seed CSV")
+                else:
+                    logger.warning("[SEED] No data parsed from seed CSV")
+            else:
+                logger.warning("[SEED] No seed_data.csv found, DB will remain empty")
+    except Exception as e:
+        logger.warning(f"[SEED] Fallback loading failed: {e}")
 
     port = int(os.environ.get("PORT", 8000))
     logger.info(f"[OK] Dashboard ready at http://localhost:{port}")
@@ -400,6 +432,62 @@ async def api_distribution():
     """Get aging bucket distribution for latest date (doughnut chart)."""
     data = await get_distribution_latest()
     return data
+
+
+# ── Fill Rate API Endpoints ────────────────────────────────
+
+@app.get("/api/fill-rate/overview")
+async def api_fill_rate_overview(
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+):
+    """Get fill rate KPI overview."""
+    start_date = validate_date_param(start_date, "start_date")
+    end_date = validate_date_param(end_date, "end_date")
+    data = await get_fill_rate_overview(start_date=start_date, end_date=end_date)
+    if not data:
+        return FillRateOverview()
+    return FillRateOverview(**data)
+
+
+@app.get("/api/fill-rate/list")
+async def api_fill_rate_list(
+    search: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(50, ge=1, le=1000),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+):
+    """Get fill rate data (paginated, searchable, date-filtered)."""
+    start_date = validate_date_param(start_date, "start_date")
+    end_date = validate_date_param(end_date, "end_date")
+    search = validate_search_param(search)
+    rows, total = await get_fill_rate_list(
+        page, limit, search,
+        start_date=start_date, end_date=end_date,
+    )
+    return FillRateListResponse(
+        rows=[FillRateRow(**r) for r in rows],
+        total=total,
+        page=page,
+        limit=limit,
+        total_pages=math.ceil(total / limit) if total > 0 else 0,
+    )
+
+
+@app.get("/api/fill-rate/top-overweight")
+async def api_fill_rate_top_overweight(
+    limit: int = Query(10, ge=1, le=50),
+    start_date: Optional[str] = Query(None),
+    end_date: Optional[str] = Query(None),
+):
+    """Get top N trips with fill_rate_weight > 100%."""
+    start_date = validate_date_param(start_date, "start_date")
+    end_date = validate_date_param(end_date, "end_date")
+    data = await get_fill_rate_top_overweight(
+        limit=limit, start_date=start_date, end_date=end_date,
+    )
+    return [FillRateTopRow(**r) for r in data]
 
 
 # ── Crawler Management ────────────────────────────────────

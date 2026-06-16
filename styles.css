@@ -1380,3 +1380,203 @@ body {
 .text-safe { color: var(--safe) !important; }
 .text-warn { color: var(--warn) !important; }
 .text-danger { color: var(--danger) !important; }
+
+/* ══════════════════════════════════════════════════════════
+   Fill Rate Section — Tỷ lệ lấp đầy tải
+   ══════════════════════════════════════════════════════════ */
+
+/* Section Divider */
+.section-divider-block {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    margin: 8px 0 4px;
+}
+
+.section-divider-line {
+    flex: 1;
+    height: 1px;
+    background: linear-gradient(90deg, transparent, var(--border-accent), transparent);
+}
+
+.section-divider-content {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 10px 24px;
+    background: var(--accent-gradient-soft);
+    border: 1px solid var(--border-accent);
+    border-radius: 30px;
+    white-space: nowrap;
+}
+
+.section-divider-content span {
+    font-size: 14px;
+    font-weight: 800;
+    letter-spacing: 0.5px;
+    text-transform: uppercase;
+    background: var(--accent-gradient);
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+}
+
+.section-divider-icon {
+    width: 18px;
+    height: 18px;
+    color: var(--accent);
+}
+
+/* Fill Rate KPI Row — 3 columns */
+.kpi-row-fill-rate {
+    grid-template-columns: repeat(3, 1fr) !important;
+}
+
+/* Overweight KPI card danger glow */
+.kpi-overweight {
+    border-color: var(--danger-border);
+}
+
+.kpi-overweight::before {
+    background: linear-gradient(135deg, var(--danger) 0%, #dc2626 100%);
+}
+
+.kpi-glow-danger {
+    position: absolute;
+    top: -50%;
+    right: -30%;
+    width: 200px;
+    height: 200px;
+    background: radial-gradient(circle, rgba(239,68,68,0.08) 0%, transparent 70%);
+    pointer-events: none;
+}
+
+.kpi-unit {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-muted);
+    align-self: flex-end;
+    padding-bottom: 4px;
+}
+
+/* Warning Card — danger accent */
+.warning-card {
+    border-color: var(--danger-border) !important;
+    position: relative;
+    overflow: hidden;
+}
+
+.warning-card::after {
+    content: '';
+    position: absolute;
+    top: 0;
+    left: 0;
+    right: 0;
+    height: 3px;
+    background: linear-gradient(90deg, var(--danger), #f97316, var(--danger));
+    background-size: 200% 100%;
+    animation: warningShimmer 3s linear infinite;
+}
+
+@keyframes warningShimmer {
+    0% { background-position: 200% 0; }
+    100% { background-position: -200% 0; }
+}
+
+.icon-danger {
+    color: var(--danger) !important;
+}
+
+/* Overweight table row */
+.data-table tbody tr.row-overweight td {
+    color: var(--danger);
+}
+
+.data-table tbody tr.row-overweight {
+    background: var(--danger-bg);
+}
+
+/* Fill rate percentage badges */
+.fill-rate-badge {
+    display: inline-flex;
+    align-items: center;
+    padding: 3px 10px;
+    border-radius: 20px;
+    font-size: 12px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+}
+
+.fill-rate-badge.overweight {
+    background: var(--danger-bg);
+    color: var(--danger);
+    border: 1px solid var(--danger-border);
+    animation: pulseOverweight 2s ease infinite;
+}
+
+.fill-rate-badge.normal {
+    background: var(--safe-bg);
+    color: var(--safe);
+    border: 1px solid var(--safe-border);
+}
+
+.fill-rate-badge.warning {
+    background: var(--warn-bg);
+    color: var(--warn);
+    border: 1px solid var(--warn-border);
+}
+
+@keyframes pulseOverweight {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(239, 68, 68, 0.3); }
+    50% { box-shadow: 0 0 0 6px rgba(239, 68, 68, 0); }
+}
+
+/* Status badge for fill rate */
+.status-badge.overweight {
+    background: var(--danger-bg);
+    color: var(--danger);
+    animation: pulseOverweight 2s ease infinite;
+}
+
+.status-badge.good {
+    background: var(--safe-bg);
+    color: var(--safe);
+}
+
+.status-badge.medium {
+    background: var(--warn-bg);
+    color: var(--warn);
+}
+
+/* Fill Rate section animation delays */
+.fill-rate-warning-section .chart-card { animation-delay: 0.7s; }
+.fill-rate-table-section .chart-card { animation-delay: 0.8s; }
+
+.kpi-row-fill-rate .kpi-card:nth-child(1) { animation-delay: 0.5s; opacity: 0; }
+.kpi-row-fill-rate .kpi-card:nth-child(2) { animation-delay: 0.58s; opacity: 0; }
+.kpi-row-fill-rate .kpi-card:nth-child(3) { animation-delay: 0.66s; opacity: 0; }
+
+/* Responsive — Fill Rate */
+@media (max-width: 1400px) {
+    .kpi-row-fill-rate {
+        grid-template-columns: repeat(3, 1fr) !important;
+    }
+}
+
+@media (max-width: 900px) {
+    .kpi-row-fill-rate {
+        grid-template-columns: 1fr !important;
+    }
+}
+
+@media (max-width: 768px) {
+    .section-divider-content {
+        padding: 8px 16px;
+    }
+    .section-divider-content span {
+        font-size: 12px;
+    }
+    #fillRateSearch {
+        width: 200px;
+    }
+}

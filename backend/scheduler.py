@@ -12,8 +12,8 @@ logger = logging.getLogger("scheduler")
 scheduler = AsyncIOScheduler()
 
 
-def setup_scheduler(crawl_func):
-    """Initialize the scheduler with the crawl job."""
+def setup_scheduler(crawl_func, fill_rate_func=None):
+    """Initialize the scheduler with the crawl jobs."""
     interval = config.crawl_interval
 
     scheduler.add_job(
@@ -25,6 +25,17 @@ def setup_scheduler(crawl_func):
         max_instances=1,
         misfire_grace_time=60,
     )
+
+    if fill_rate_func:
+        scheduler.add_job(
+            fill_rate_func,
+            trigger=IntervalTrigger(minutes=interval),
+            id="fill_rate_crawl",
+            name="Fill Rate Crawler",
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=60,
+        )
 
     logger.info(f"[SCHEDULE] Configured: crawl every {interval} minutes")
 
