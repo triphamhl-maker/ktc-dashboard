@@ -7,5 +7,9 @@ services:
     envVars:
       - key: PYTHON_VERSION
         value: "3.11"
+      - key: SHEET_ID
+        value: "16nhZJyAiCX7xzBujieAF1AOas6bgh2-4X6ePQixWHJE"
+      - key: SHEET_GID
+        value: "0"
     autoDeploy: true
     plan: free

@@ -60,32 +60,31 @@ async def lifespan(app: FastAPI):
     """Startup and shutdown events."""
     logger.info("[STARTUP] Starting GHN Backlog KTC Dashboard...")
 
-    # Check if DB needs schema upgrade (UNIQUE constraint)
+    # Initialize database (CREATE TABLE IF NOT EXISTS — safe, idempotent)
     try:
         await init_database()
         count = await get_snapshot_count()
-        if count > 0:
-            # Test if UNIQUE constraint exists by checking schema
-            import aiosqlite
-            from config import DB_PATH
-            db = await aiosqlite.connect(str(DB_PATH))
-            cursor = await db.execute("SELECT sql FROM sqlite_master WHERE name='backlog_snapshots'")
-            row = await cursor.fetchone()
-            await db.close()
-            if row and "UNIQUE" not in (row[0] or ""):
-                logger.info("[DB] Schema upgrade needed — resetting database")
-                await reset_database()
+        logger.info(f"[DB] Initialized with {count} existing records")
     except Exception as e:
-        logger.warning(f"[DB] Schema check issue: {e}")
-        await reset_database()
+        logger.warning(f"[DB] Init issue, recreating: {e}")
+        try:
+            await reset_database()
+        except Exception as e2:
+            logger.error(f"[DB] Reset also failed: {e2}")
 
     # Setup scheduler
     setup_scheduler(crawl_backlog_data)
     start_scheduler()
 
-    # Trigger immediate first crawl
-    logger.info("[CRAWL] Triggering initial data fetch from Google Sheets...")
-    asyncio.create_task(crawl_backlog_data())
+    # Await initial crawl so data is ready before serving requests
+    logger.info("[CRAWL] Fetching initial data from Google Sheets...")
+    try:
+        await asyncio.wait_for(crawl_backlog_data(), timeout=60)
+        logger.info("[CRAWL] Initial data fetch completed")
+    except asyncio.TimeoutError:
+        logger.warning("[CRAWL] Initial fetch timed out (60s), will retry on schedule")
+    except Exception as e:
+        logger.warning(f"[CRAWL] Initial fetch failed: {e}, will retry on schedule")
 
     port = int(os.environ.get("PORT", 8000))
     logger.info(f"[OK] Dashboard ready at http://localhost:{port}")

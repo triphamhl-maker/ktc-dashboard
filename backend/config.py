@@ -7,11 +7,17 @@ Data source: Google Sheets (published CSV export).
 import os
 import re
 import json
+import logging
 from pathlib import Path
+
+_cfg_logger = logging.getLogger("config")
 
 BASE_DIR = Path(__file__).resolve().parent.parent
 DATA_DIR = BASE_DIR / "data"
-DATA_DIR.mkdir(exist_ok=True)
+try:
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+except OSError as e:
+    _cfg_logger.warning(f"Could not create data dir {DATA_DIR}: {e}")
 
 DB_PATH = DATA_DIR / "backlog.db"
 CONFIG_FILE = DATA_DIR / "config.json"

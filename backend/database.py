@@ -102,54 +102,25 @@ async def insert_snapshot_batch(rows: List[Dict], source: str = "crawl"):
     try:
         now = datetime.utcnow().isoformat()
         count = 0
-        new_count = 0
 
         for row in rows:
             is_bl = 1 if is_backlog_24h(row.get("aging_bucket", "")) else 0
-            # Check if record exists
-            cursor = await db.execute(
-                "SELECT id FROM backlog_snapshots WHERE aging_bucket = ? AND time_date = ?",
-                (row.get("aging_bucket", ""), row.get("time_date", "")),
+            await db.execute(
+                """INSERT OR REPLACE INTO backlog_snapshots
+                   (aging_bucket, time_date, volume, percent_volume,
+                    lead_time, is_backlog, crawled_at, source)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (
+                    row.get("aging_bucket", ""),
+                    row.get("time_date", ""),
+                    row.get("volume", 0),
+                    row.get("percent_volume", 0.0),
+                    row.get("lead_time", 0.0),
+                    is_bl,
+                    now,
+                    source,
+                ),
             )
-            existing = await cursor.fetchone()
-
-            if existing:
-                # Update existing record
-                await db.execute(
-                    """UPDATE backlog_snapshots
-                       SET volume = ?, percent_volume = ?, lead_time = ?,
-                           is_backlog = ?, crawled_at = ?, source = ?
-                       WHERE aging_bucket = ? AND time_date = ?""",
-                    (
-                        row.get("volume", 0),
-                        row.get("percent_volume", 0.0),
-                        row.get("lead_time", 0.0),
-                        is_bl,
-                        now,
-                        source,
-                        row.get("aging_bucket", ""),
-                        row.get("time_date", ""),
-                    ),
-                )
-            else:
-                # Insert new record
-                await db.execute(
-                    """INSERT INTO backlog_snapshots
-                       (aging_bucket, time_date, volume, percent_volume,
-                        lead_time, is_backlog, crawled_at, source)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
-                    (
-                        row.get("aging_bucket", ""),
-                        row.get("time_date", ""),
-                        row.get("volume", 0),
-                        row.get("percent_volume", 0.0),
-                        row.get("lead_time", 0.0),
-                        is_bl,
-                        now,
-                        source,
-                    ),
-                )
-                new_count += 1
             count += 1
 
         # Compute and save KPI history
@@ -172,7 +143,7 @@ async def insert_snapshot_batch(rows: List[Dict], source: str = "crawl"):
         )
 
         await db.commit()
-        logger.info(f"[DB] Upserted {count} records ({new_count} new, {count - new_count} updated)")
+        logger.info(f"[DB] Upserted {count} records")
         return count
     finally:
         await db.close()

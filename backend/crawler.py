@@ -65,24 +65,31 @@ async def crawl_backlog_data():
         }
 
         csv_text = None
+        max_retries = 3
 
         async with httpx.AsyncClient(
             timeout=config.get("request_timeout_seconds", 30),
             follow_redirects=True,
         ) as client:
             for url in urls:
-                try:
-                    logger.info(f"Trying: {url[:80]}...")
-                    resp = await client.get(url, headers=headers)
-                    if resp.status_code == 200:
-                        csv_text = resp.text
-                        logger.info(f"[OK] Fetched {len(csv_text)} bytes from Google Sheets")
-                        break
-                    else:
-                        logger.warning(f"HTTP {resp.status_code} from {url[:60]}")
-                except Exception as e:
-                    logger.warning(f"Request failed: {e}")
-                    continue
+                for attempt in range(1, max_retries + 1):
+                    try:
+                        logger.info(f"Trying ({attempt}/{max_retries}): {url[:80]}...")
+                        resp = await client.get(url, headers=headers)
+                        if resp.status_code == 200:
+                            csv_text = resp.text
+                            logger.info(f"[OK] Fetched {len(csv_text)} bytes from Google Sheets")
+                            break
+                        else:
+                            logger.warning(f"HTTP {resp.status_code} from {url[:60]}")
+                    except Exception as e:
+                        logger.warning(f"Request failed (attempt {attempt}): {e}")
+                        if attempt < max_retries:
+                            import asyncio
+                            await asyncio.sleep(2 ** attempt)  # 2s, 4s backoff
+                        continue
+                if csv_text:
+                    break
 
         if not csv_text:
             crawler_state.last_error = "Could not fetch data from Google Sheets (sheet may not be public)"
