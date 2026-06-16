@@ -1,10 +1,12 @@
 """
-APScheduler setup for periodic backlog crawling.
+APScheduler setup for periodic backlog crawling and Telegram reports.
 """
 
+import os
 import logging
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.triggers.cron import CronTrigger
 from config import config
 
 logger = logging.getLogger("scheduler")
@@ -13,7 +15,7 @@ scheduler = AsyncIOScheduler()
 
 
 def setup_scheduler(crawl_func, fill_rate_func=None):
-    """Initialize the scheduler with the crawl jobs."""
+    """Initialize the scheduler with the crawl jobs and Telegram report jobs."""
     interval = config.crawl_interval
 
     scheduler.add_job(
@@ -36,6 +38,36 @@ def setup_scheduler(crawl_func, fill_rate_func=None):
             max_instances=1,
             misfire_grace_time=60,
         )
+
+    # ── Telegram Bot Daily Reports ─────────────────────────
+    if os.environ.get("TELEGRAM_BOT_TOKEN") and os.environ.get("TELEGRAM_CHAT_ID"):
+        from telegram_bot import trigger_send_report
+
+        # Report at 09:00 Vietnam time (UTC+7)
+        scheduler.add_job(
+            trigger_send_report,
+            trigger=CronTrigger(hour=9, minute=0, timezone="Asia/Ho_Chi_Minh"),
+            id="telegram_report_09",
+            name="Telegram Daily Report 09:00",
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=300,
+        )
+
+        # Report at 23:00 Vietnam time (UTC+7)
+        scheduler.add_job(
+            trigger_send_report,
+            trigger=CronTrigger(hour=23, minute=0, timezone="Asia/Ho_Chi_Minh"),
+            id="telegram_report_23",
+            name="Telegram Daily Report 23:00",
+            replace_existing=True,
+            max_instances=1,
+            misfire_grace_time=300,
+        )
+
+        logger.info("[SCHEDULE] Telegram reports scheduled at 09:00 and 23:00 (Asia/Ho_Chi_Minh)")
+    else:
+        logger.info("[SCHEDULE] Telegram bot not configured (missing TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID)")
 
     logger.info(f"[SCHEDULE] Configured: crawl every {interval} minutes")
 

@@ -700,7 +700,10 @@ async def get_fill_rate_overview(
                 COUNT(*) as total_trips,
                 AVG(fill_rate_weight) as avg_fill_weight,
                 AVG(fill_rate_order) as avg_fill_order,
-                SUM(CASE WHEN fill_rate_weight > 100 THEN 1 ELSE 0 END) as overweight_count,
+                SUM(CASE WHEN fill_rate_weight > 100
+                         AND (route_name NOT LIKE '%DongNai_GHN_3%')
+                         AND (license_plate != '50H77777')
+                    THEN 1 ELSE 0 END) as overweight_count,
                 MAX(trip_date) as latest_date,
                 MIN(trip_date) as earliest_date
                FROM fill_rate {where}""",
@@ -782,7 +785,11 @@ async def get_fill_rate_top_overweight(
     """Get top N trips with fill_rate_weight > 100%, sorted by descending rate."""
     db = await get_db()
     try:
-        conds = ["fill_rate_weight > 100"]
+        conds = [
+            "fill_rate_weight > 100",
+            "route_name NOT LIKE '%DongNai_GHN_3%'",
+            "license_plate != '50H77777'",
+        ]
         params = []
         if start_date:
             conds.append("trip_date >= ?")

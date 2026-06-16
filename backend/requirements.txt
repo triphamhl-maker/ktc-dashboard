@@ -6,3 +6,4 @@ apscheduler>=3.10.0
 pydantic>=2.5.0
 python-multipart>=0.0.6
 PyJWT>=2.8.0
+pytz>=2024.1
