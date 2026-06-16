@@ -157,6 +157,106 @@
             <!-- Dashboard Grid -->
             <div class="dashboard-grid">
                 
+                <!-- ═══════════════════════════════════════════════════════ -->
+                <!-- Fill Rate Section — Tỷ lệ lấp đầy tải              -->
+                <!-- ═══════════════════════════════════════════════════════ -->
+                
+                <div class="section-divider-block" id="fillRateSection">
+                    <div class="section-divider-line"></div>
+                    <div class="section-divider-content">
+                        <i data-lucide="truck" class="section-divider-icon"></i>
+                        <span>Tỷ Lệ Lấp Đầy Tải</span>
+                    </div>
+                    <div class="section-divider-line"></div>
+                </div>
+                
+                <!-- Fill Rate KPI Row -->
+                <section class="kpi-row kpi-row-fill-rate">
+                    <!-- KPI: Avg Fill Rate Weight -->
+                    <div class="kpi-card" id="kpiFillWeight">
+                        <div class="kpi-header">
+                            <span class="kpi-label">TB Lấp Đầy (KL)</span>
+                            <div class="kpi-badge badge-blue">
+                                <i data-lucide="weight"></i>
+                            </div>
+                        </div>
+                        <div class="kpi-body">
+                            <span class="kpi-value" id="kpiFillWeightValue">—</span>
+                        </div>
+                        <div class="kpi-footer">
+                            <span class="kpi-note" id="kpiFillWeightNote">Trung bình tất cả chuyến</span>
+                        </div>
+                    </div>
+                    
+                    <!-- KPI: Avg Fill Rate Order -->
+                    <div class="kpi-card" id="kpiFillOrder">
+                        <div class="kpi-header">
+                            <span class="kpi-label">TB Lấp Đầy (Đơn)</span>
+                            <div class="kpi-badge badge-green">
+                                <i data-lucide="shopping-bag"></i>
+                            </div>
+                        </div>
+                        <div class="kpi-body">
+                            <span class="kpi-value" id="kpiFillOrderValue">—</span>
+                        </div>
+                        <div class="kpi-footer">
+                            <span class="kpi-note" id="kpiFillOrderNote">Trung bình tất cả chuyến</span>
+                        </div>
+                    </div>
+                    
+                    <!-- KPI: Overweight Count (Warning) -->
+                    <div class="kpi-card kpi-overweight" id="kpiOverweight">
+                        <div class="kpi-glow kpi-glow-danger"></div>
+                        <div class="kpi-header">
+                            <span class="kpi-label">Vượt Tải (&gt;100%)</span>
+                            <div class="kpi-badge badge-red">
+                                <i data-lucide="alert-octagon"></i>
+                            </div>
+                        </div>
+                        <div class="kpi-body">
+                            <span class="kpi-value" id="kpiOverweightValue">—</span>
+                            <span class="kpi-unit">chuyến</span>
+                        </div>
+                        <div class="kpi-footer">
+                            <span class="kpi-note" id="kpiOverweightNote">Chuyến tải vượt 100% KL</span>
+                        </div>
+                    </div>
+                </section>
+                
+                <!-- Top 10 Overweight Warning Table -->
+                <section class="table-section fill-rate-warning-section">
+                    <div class="chart-card warning-card" id="overweightCard">
+                        <div class="chart-card-header">
+                            <div class="chart-title-group">
+                                <h3>
+                                    <i data-lucide="alert-triangle" class="chart-icon icon-danger"></i>
+                                    Top 10 Chuyến Vượt Tải Theo KL
+                                </h3>
+                                <p class="chart-subtitle">Chuyến tải có tỷ lệ lấp đầy KL vượt mức 100% nhiều nhất</p>
+                            </div>
+                        </div>
+                        <div class="table-wrapper">
+                            <table class="data-table" id="overweightTable">
+                                <thead>
+                                    <tr>
+                                        <th>#</th>
+                                        <th>Ngày</th>
+                                        <th>Mã Chuyến</th>
+                                        <th>Tuyến</th>
+                                        <th>Biển Số</th>
+                                        <th class="text-right">Tải Trọng</th>
+                                        <th class="text-right">Fill Rate KL</th>
+                                        <th class="text-right">Fill Rate Đơn</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="overweightBody">
+                                    <!-- Dynamic rows -->
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+                
                 <!-- KPI Row -->
                 <section class="kpi-row">
                     <!-- KPI 1: Total Volume -->
@@ -324,106 +424,6 @@
                         <div class="table-footer">
                             <span class="table-info" id="tableInfo">Đang tải...</span>
                             <div class="table-pagination" id="tablePagination"></div>
-                        </div>
-                    </div>
-                </section>
-                
-                <!-- ═══════════════════════════════════════════════════════ -->
-                <!-- Fill Rate Section — Tỷ lệ lấp đầy tải              -->
-                <!-- ═══════════════════════════════════════════════════════ -->
-                
-                <div class="section-divider-block" id="fillRateSection">
-                    <div class="section-divider-line"></div>
-                    <div class="section-divider-content">
-                        <i data-lucide="truck" class="section-divider-icon"></i>
-                        <span>Tỷ Lệ Lấp Đầy Tải</span>
-                    </div>
-                    <div class="section-divider-line"></div>
-                </div>
-                
-                <!-- Fill Rate KPI Row -->
-                <section class="kpi-row kpi-row-fill-rate">
-                    <!-- KPI: Avg Fill Rate Weight -->
-                    <div class="kpi-card" id="kpiFillWeight">
-                        <div class="kpi-header">
-                            <span class="kpi-label">TB Lấp Đầy (KL)</span>
-                            <div class="kpi-badge badge-blue">
-                                <i data-lucide="weight"></i>
-                            </div>
-                        </div>
-                        <div class="kpi-body">
-                            <span class="kpi-value" id="kpiFillWeightValue">—</span>
-                        </div>
-                        <div class="kpi-footer">
-                            <span class="kpi-note" id="kpiFillWeightNote">Trung bình tất cả chuyến</span>
-                        </div>
-                    </div>
-                    
-                    <!-- KPI: Avg Fill Rate Order -->
-                    <div class="kpi-card" id="kpiFillOrder">
-                        <div class="kpi-header">
-                            <span class="kpi-label">TB Lấp Đầy (Đơn)</span>
-                            <div class="kpi-badge badge-green">
-                                <i data-lucide="shopping-bag"></i>
-                            </div>
-                        </div>
-                        <div class="kpi-body">
-                            <span class="kpi-value" id="kpiFillOrderValue">—</span>
-                        </div>
-                        <div class="kpi-footer">
-                            <span class="kpi-note" id="kpiFillOrderNote">Trung bình tất cả chuyến</span>
-                        </div>
-                    </div>
-                    
-                    <!-- KPI: Overweight Count (Warning) -->
-                    <div class="kpi-card kpi-overweight" id="kpiOverweight">
-                        <div class="kpi-glow kpi-glow-danger"></div>
-                        <div class="kpi-header">
-                            <span class="kpi-label">Vượt Tải (&gt;100%)</span>
-                            <div class="kpi-badge badge-red">
-                                <i data-lucide="alert-octagon"></i>
-                            </div>
-                        </div>
-                        <div class="kpi-body">
-                            <span class="kpi-value" id="kpiOverweightValue">—</span>
-                            <span class="kpi-unit">chuyến</span>
-                        </div>
-                        <div class="kpi-footer">
-                            <span class="kpi-note" id="kpiOverweightNote">Chuyến tải vượt 100% KL</span>
-                        </div>
-                    </div>
-                </section>
-                
-                <!-- Top 10 Overweight Warning Table -->
-                <section class="table-section fill-rate-warning-section">
-                    <div class="chart-card warning-card" id="overweightCard">
-                        <div class="chart-card-header">
-                            <div class="chart-title-group">
-                                <h3>
-                                    <i data-lucide="alert-triangle" class="chart-icon icon-danger"></i>
-                                    Top 10 Chuyến Vượt Tải Theo KL
-                                </h3>
-                                <p class="chart-subtitle">Chuyến tải có tỷ lệ lấp đầy KL vượt mức 100% nhiều nhất</p>
-                            </div>
-                        </div>
-                        <div class="table-wrapper">
-                            <table class="data-table" id="overweightTable">
-                                <thead>
-                                    <tr>
-                                        <th>#</th>
-                                        <th>Ngày</th>
-                                        <th>Mã Chuyến</th>
-                                        <th>Tuyến</th>
-                                        <th>Biển Số</th>
-                                        <th class="text-right">Tải Trọng</th>
-                                        <th class="text-right">Fill Rate KL</th>
-                                        <th class="text-right">Fill Rate Đơn</th>
-                                    </tr>
-                                </thead>
-                                <tbody id="overweightBody">
-                                    <!-- Dynamic rows -->
-                                </tbody>
-                            </table>
                         </div>
                     </div>
                 </section>
