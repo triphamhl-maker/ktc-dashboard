@@ -186,6 +186,17 @@ def _build_urgent_alert(
     return report
 
 
+def _format_trip_date(date_str: str) -> str:
+    """Convert YYYY-MM-DD to dd/mm format for compact display."""
+    if not date_str or date_str in ("", "null", "N/A"):
+        return "N/A"
+    try:
+        parts = date_str.split("-")
+        return f"{parts[2]}/{parts[1]}"
+    except (IndexError, AttributeError):
+        return date_str
+
+
 def _build_top10_section(top_overweight: list) -> str:
     """Build the Top 10 overweight trips section for the report.
     Trips with DongNai_GHN_3 or license plate 50H77777 are already
@@ -195,13 +206,16 @@ def _build_top10_section(top_overweight: list) -> str:
 
     lines = ["━━ 🏆 TOP 10 VƯỢT TẢI ━━━"]
     for i, trip in enumerate(top_overweight, 1):
-        route = trip.get("route_name", "N/A")
+        route = trip.get("route_name") or ""
+        # Handle null/empty route names
+        if not route or route.lower() in ("null", "none", ""):
+            route = "Chưa xác định"
         # Truncate long route names for Telegram readability
         if len(route) > 25:
             route = route[:22] + "..."
         plate = trip.get("license_plate", "N/A")
         fr = trip.get("fill_rate_weight", 0)
-        trip_date = trip.get("trip_date", "")
+        trip_date = _format_trip_date(trip.get("trip_date", ""))
 
         # Emoji ranking for top 3
         if i == 1:
@@ -213,7 +227,7 @@ def _build_top10_section(top_overweight: list) -> str:
         else:
             rank = f"{i}."
 
-        lines.append(f"{rank} <b>{fr:.1f}%</b> | {plate} | {route}")
+        lines.append(f"{rank} <b>{fr:.1f}%</b> | {plate} | {route} | 📅{trip_date}")
 
     return "\n".join(lines)
 
