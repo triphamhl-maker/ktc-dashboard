@@ -72,12 +72,14 @@ def _format_number(n, decimals=0):
 
 async def build_report_message() -> str:
     """Build the daily report message by querying the database directly."""
-    from database import get_overview_kpi, get_fill_rate_overview
+    from database import get_overview_kpi, get_fill_rate_overview, get_fill_rate_top_overweight
 
     try:
         # Get backlog overview (latest day, no date filter)
         overview = await get_overview_kpi()
         fill_rate = await get_fill_rate_overview()
+        # Top 10 overweight trips (>100%, excluding fake routes)
+        top_overweight = await get_fill_rate_top_overweight(limit=10)
     except Exception as e:
         logger.error(f"[TelegramBot] Failed to query database: {e}")
         return _build_error_message(str(e))
@@ -101,25 +103,28 @@ async def build_report_message() -> str:
     now = datetime.now()
     time_str = now.strftime("%H:%M — %d/%m/%Y")
 
+    # Build top 10 overweight section
+    top10_text = _build_top10_section(top_overweight)
+
     # Decide format based on SLA threshold
     if backlog_pct > SLA_THRESHOLD:
         return _build_urgent_alert(
             time_str, latest_date, total_volume, backlog_pct, backlog_vol,
-            avg_leadtime, fr_weight, fr_order, overweight_count,
+            avg_leadtime, fr_weight, fr_order, overweight_count, top10_text,
         )
     else:
         return _build_normal_report(
             time_str, latest_date, total_volume, backlog_pct, backlog_vol,
-            avg_leadtime, fr_weight, fr_order, overweight_count,
+            avg_leadtime, fr_weight, fr_order, overweight_count, top10_text,
         )
 
 
 def _build_normal_report(
     time_str, latest_date, total_volume, backlog_pct, backlog_vol,
-    avg_leadtime, fr_weight, fr_order, overweight_count,
+    avg_leadtime, fr_weight, fr_order, overweight_count, top10_text,
 ) -> str:
     """Build normal daily report (backlog <= SLA threshold)."""
-    return (
+    report = (
         f"📊 <b>BÁO CÁO VẬN HÀNH KTC</b>\n"
         f"🕐 {time_str}\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -136,18 +141,22 @@ def _build_normal_report(
         f"⚖️ TB Lấp đầy (KL): <b>{fr_weight:.1f}%</b>\n"
         f"📦 TB Lấp đầy (Đơn): <b>{fr_order:.1f}%</b>\n"
         f"{'⚠️ Vượt tải: <b>' + str(overweight_count) + ' chuyến</b>' if overweight_count > 0 else '✅ Không có chuyến vượt tải'}\n"
-        f"\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
+    )
+    if top10_text:
+        report += f"\n{top10_text}\n"
+    report += (
+        f"\n━━━━━━━━━━━━━━━━━━━━\n"
         f"🔗 <a href='https://ktc-dashboard.onrender.com'>Xem Dashboard</a>"
     )
+    return report
 
 
 def _build_urgent_alert(
     time_str, latest_date, total_volume, backlog_pct, backlog_vol,
-    avg_leadtime, fr_weight, fr_order, overweight_count,
+    avg_leadtime, fr_weight, fr_order, overweight_count, top10_text,
 ) -> str:
     """Build urgent alert message (backlog > SLA threshold)."""
-    return (
+    report = (
         f"🚨🚨🚨 <b>CẢNH BÁO KHẨN CẤP</b> 🚨🚨🚨\n"
         f"⚠️ <b>BACKLOG VƯỢT NGƯỠNG SLA!</b>\n"
         f"🕐 {time_str}\n"
@@ -166,11 +175,47 @@ def _build_urgent_alert(
         f"⚖️ TB Lấp đầy (KL): <b>{fr_weight:.1f}%</b>\n"
         f"📦 TB Lấp đầy (Đơn): <b>{fr_order:.1f}%</b>\n"
         f"{'🔴 Vượt tải: <b>' + str(overweight_count) + ' chuyến</b>' if overweight_count > 0 else '✅ Không có chuyến vượt tải'}\n"
-        f"\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
+    )
+    if top10_text:
+        report += f"\n{top10_text}\n"
+    report += (
+        f"\n━━━━━━━━━━━━━━━━━━━━\n"
         f"⚡ <b>Cần xử lý ngay!</b>\n"
         f"🔗 <a href='https://ktc-dashboard.onrender.com'>Xem Dashboard</a>"
     )
+    return report
+
+
+def _build_top10_section(top_overweight: list) -> str:
+    """Build the Top 10 overweight trips section for the report.
+    Trips with DongNai_GHN_3 or license plate 50H77777 are already
+    filtered out by the database query."""
+    if not top_overweight:
+        return ""
+
+    lines = ["━━ 🏆 TOP 10 VƯỢT TẢI ━━━"]
+    for i, trip in enumerate(top_overweight, 1):
+        route = trip.get("route_name", "N/A")
+        # Truncate long route names for Telegram readability
+        if len(route) > 25:
+            route = route[:22] + "..."
+        plate = trip.get("license_plate", "N/A")
+        fr = trip.get("fill_rate_weight", 0)
+        trip_date = trip.get("trip_date", "")
+
+        # Emoji ranking for top 3
+        if i == 1:
+            rank = "🥇"
+        elif i == 2:
+            rank = "🥈"
+        elif i == 3:
+            rank = "🥉"
+        else:
+            rank = f"{i}."
+
+        lines.append(f"{rank} <b>{fr:.1f}%</b> | {plate} | {route}")
+
+    return "\n".join(lines)
 
 
 def _build_error_message(error: str) -> str:
