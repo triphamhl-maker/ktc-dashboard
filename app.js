@@ -337,14 +337,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // ─── Dashboard Refresh ────────────────────────────────────
     const refreshDashboard = async () => {
         try {
-            const [overview, trend, dist, daily, crawlerSt, frOverview, frTop] = await Promise.all([
+            const [overview, trend, dist, daily, crawlerSt] = await Promise.all([
                 api.overview(),
                 api.trend(),
                 api.distribution(),
                 api.backlogDaily(),
                 api.crawlerStatus(),
-                api.fillRateOverview(),
-                api.fillRateTopOverweight(),
             ]);
 
             cachedOverview = overview;
@@ -357,15 +355,23 @@ document.addEventListener('DOMContentLoaded', () => {
             renderCrawlerStatus(crawlerSt);
             renderTable();
             updateTimestamp();
+        } catch (e) {
+            console.error('[Dashboard] Backlog refresh failed:', e);
+            crawlerDetail.textContent = 'Lỗi kết nối backend';
+            crawlerDot.className = 'crawler-status-dot error';
+        }
 
-            // Fill Rate
+        // Fill Rate — independent from backlog, won't break main dashboard
+        try {
+            const [frOverview, frTop] = await Promise.all([
+                api.fillRateOverview(),
+                api.fillRateTopOverweight(),
+            ]);
             renderFillRateKPIs(frOverview);
             renderOverweightTable(frTop);
             renderFillRateTable();
         } catch (e) {
-            console.error('[Dashboard] Refresh failed:', e);
-            crawlerDetail.textContent = 'Lỗi kết nối backend';
-            crawlerDot.className = 'crawler-status-dot error';
+            console.error('[FillRate] Refresh failed:', e);
         }
     };
 
