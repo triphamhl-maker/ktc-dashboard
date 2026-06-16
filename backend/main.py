@@ -88,15 +88,30 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.warning(f"[CRAWL] Initial fetch failed: {e}, will retry on schedule")
 
-    # Crawl fill rate data
+    # Crawl fill rate data (larger CSV, needs more time)
     logger.info("[CRAWL] Fetching fill rate data from Google Sheets...")
     try:
-        await asyncio.wait_for(crawl_fill_rate_data(), timeout=60)
+        await asyncio.wait_for(crawl_fill_rate_data(), timeout=90)
         logger.info("[CRAWL] Fill rate data fetch completed")
     except asyncio.TimeoutError:
-        logger.warning("[CRAWL] Fill rate fetch timed out (60s), will retry on schedule")
+        logger.warning("[CRAWL] Fill rate fetch timed out (90s), will retry in 30s")
+        # Schedule a background retry after 30s
+        async def retry_fill_rate():
+            await asyncio.sleep(30)
+            try:
+                await crawl_fill_rate_data()
+            except Exception as e2:
+                logger.warning(f"[CRAWL] Fill rate retry also failed: {e2}")
+        asyncio.create_task(retry_fill_rate())
     except Exception as e:
-        logger.warning(f"[CRAWL] Fill rate fetch failed: {e}, will retry on schedule")
+        logger.warning(f"[CRAWL] Fill rate fetch failed: {e}, will retry in 30s")
+        async def retry_fill_rate():
+            await asyncio.sleep(30)
+            try:
+                await crawl_fill_rate_data()
+            except Exception as e2:
+                logger.warning(f"[CRAWL] Fill rate retry also failed: {e2}")
+        asyncio.create_task(retry_fill_rate())
 
     # Fallback: if DB is still empty after crawl, load from bundled seed CSV
     try:
@@ -494,33 +509,49 @@ async def api_fill_rate_top_overweight(
 
 @app.get("/api/crawler/status")
 async def api_crawler_status():
-    """Get crawler status."""
+    """Get crawler status (includes both backlog and fill rate)."""
     # Sanitize error message — never expose raw internal errors
     safe_error = None
     if crawler_state.last_error:
         safe_error = str(crawler_state.last_error)[:120]
         # Remove any file paths or sensitive info
         safe_error = re.sub(r'[/\\][a-zA-Z0-9_./-]+', '[path]', safe_error)
-    return CrawlerStatus(
-        is_running=crawler_state.is_running,
-        last_run_at=crawler_state.last_run_at,
-        next_run_at=get_next_run_time(),
-        last_duration_seconds=crawler_state.last_duration_seconds,
-        last_records_count=crawler_state.last_records_count,
-        last_error=safe_error,
-        consecutive_errors=crawler_state.consecutive_errors,
-        crawl_interval_minutes=config.crawl_interval,
-        sheet_configured=True,
-    )
+
+    # Fill rate crawler state
+    fr_safe_error = None
+    if fill_rate_crawler_state.last_error:
+        fr_safe_error = str(fill_rate_crawler_state.last_error)[:120]
+        fr_safe_error = re.sub(r'[/\\][a-zA-Z0-9_./-]+', '[path]', fr_safe_error)
+
+    return {
+        "is_running": crawler_state.is_running,
+        "last_run_at": crawler_state.last_run_at,
+        "next_run_at": get_next_run_time(),
+        "last_duration_seconds": crawler_state.last_duration_seconds,
+        "last_records_count": crawler_state.last_records_count,
+        "last_error": safe_error,
+        "consecutive_errors": crawler_state.consecutive_errors,
+        "crawl_interval_minutes": config.crawl_interval,
+        "sheet_configured": True,
+        # Fill rate crawler info
+        "fill_rate_is_running": fill_rate_crawler_state.is_running,
+        "fill_rate_last_run_at": fill_rate_crawler_state.last_run_at,
+        "fill_rate_last_records_count": fill_rate_crawler_state.last_records_count,
+        "fill_rate_last_error": fr_safe_error,
+        "fill_rate_consecutive_errors": fill_rate_crawler_state.consecutive_errors,
+    }
 
 
 @app.post("/api/crawler/trigger")
 async def api_trigger_crawl():
-    """Manually trigger a crawl from Google Sheets."""
-    if crawler_state.is_running:
+    """Manually trigger a crawl from Google Sheets (backlog + fill rate)."""
+    if crawler_state.is_running and fill_rate_crawler_state.is_running:
         raise HTTPException(status_code=409, detail="Crawler is already running")
-    asyncio.create_task(crawl_backlog_data())
-    return {"message": "Crawl triggered", "status": "started"}
+    if not crawler_state.is_running:
+        asyncio.create_task(crawl_backlog_data())
+    if not fill_rate_crawler_state.is_running:
+        asyncio.create_task(crawl_fill_rate_data())
+    return {"message": "Crawl triggered (backlog + fill rate)", "status": "started"}
 
 
 @app.post("/api/config/interval")

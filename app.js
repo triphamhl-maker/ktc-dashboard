@@ -1086,9 +1086,15 @@ document.addEventListener('DOMContentLoaded', () => {
     const renderCrawlerStatus = (status) => {
         if (!status) return;
 
-        if (status.is_running) {
+        if (status.is_running || status.fill_rate_is_running) {
             crawlerDot.className = 'crawler-status-dot running';
             crawlerDetail.textContent = 'Đang crawl dữ liệu...';
+        } else if (status.last_error && status.fill_rate_last_error) {
+            crawlerDot.className = 'crawler-status-dot error';
+            crawlerDetail.textContent = `Lỗi: ${String(status.last_error).substring(0, 60).replace(/[<>"'&]/g, '')}`;
+        } else if (status.fill_rate_last_error) {
+            crawlerDot.className = 'crawler-status-dot error';
+            crawlerDetail.textContent = `Fill Rate lỗi: ${String(status.fill_rate_last_error).substring(0, 50).replace(/[<>"'&]/g, '')}`;
         } else if (status.last_error) {
             crawlerDot.className = 'crawler-status-dot error';
             crawlerDetail.textContent = `Lỗi: ${String(status.last_error).substring(0, 60).replace(/[<>"'&]/g, '')}`;
@@ -1100,9 +1106,14 @@ document.addEventListener('DOMContentLoaded', () => {
             crawlerDetail.textContent = 'Chờ crawl lần đầu...';
         }
 
-        crawlerRecords.textContent = status.last_records_count > 0
-            ? `${status.last_records_count} records`
-            : '—';
+        // Show combined records count
+        const blRecords = status.last_records_count || 0;
+        const frRecords = status.fill_rate_last_records_count || 0;
+        if (blRecords > 0 || frRecords > 0) {
+            crawlerRecords.textContent = `${blRecords + frRecords} records`;
+        } else {
+            crawlerRecords.textContent = '—';
+        }
         crawlerInterval.textContent = `Mỗi ${status.crawl_interval_minutes} phút`;
     };
 

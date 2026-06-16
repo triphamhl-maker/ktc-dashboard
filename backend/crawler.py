@@ -411,8 +411,11 @@ async def crawl_fill_rate_data():
         csv_text = None
         max_retries = 3
 
+        # Use longer timeout for fill rate CSV (can be 400KB+)
+        fill_rate_timeout = max(config.get("request_timeout_seconds", 30), 60)
+
         async with httpx.AsyncClient(
-            timeout=config.get("request_timeout_seconds", 30),
+            timeout=fill_rate_timeout,
             follow_redirects=True,
         ) as client:
             for url in urls:
@@ -422,10 +425,10 @@ async def crawl_fill_rate_data():
                         resp = await client.get(url, headers=headers)
                         if resp.status_code == 200:
                             csv_text = resp.text
-                            logger.info(f"[FillRate] Fetched {len(csv_text)} bytes")
+                            logger.info(f"[FillRate] Fetched {len(csv_text)} bytes (status 200)")
                             break
                         else:
-                            logger.warning(f"[FillRate] HTTP {resp.status_code}")
+                            logger.warning(f"[FillRate] HTTP {resp.status_code} from {url[:60]}")
                     except Exception as e:
                         logger.warning(f"[FillRate] Request failed (attempt {attempt}): {e}")
                         if attempt < max_retries:
@@ -441,9 +444,12 @@ async def crawl_fill_rate_data():
             logger.error("[FillRate] All URLs failed")
             return
 
+        logger.info(f"[FillRate] Parsing CSV ({len(csv_text)} bytes)...")
         rows = parse_fill_rate_csv(csv_text)
+        logger.info(f"[FillRate] Parsed {len(rows)} records from CSV")
 
         if rows:
+            logger.info(f"[FillRate] Inserting {len(rows)} records into database...")
             count = await insert_fill_rate_batch(rows)
             elapsed = time_mod.time() - start_time
             fill_rate_crawler_state.last_run_at = datetime.utcnow().isoformat()
@@ -453,7 +459,7 @@ async def crawl_fill_rate_data():
             fill_rate_crawler_state.consecutive_errors = 0
             logger.info(f"[FillRate] Crawl completed: {count} records in {elapsed:.1f}s")
         else:
-            fill_rate_crawler_state.last_error = "No valid fill rate data parsed"
+            fill_rate_crawler_state.last_error = "No valid fill rate data parsed from CSV"
             fill_rate_crawler_state.consecutive_errors += 1
             logger.warning("[FillRate] CSV fetched but no data parsed")
 
