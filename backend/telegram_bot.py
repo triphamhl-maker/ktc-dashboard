@@ -71,59 +71,56 @@ def _format_number(n, decimals=0):
 
 
 async def build_report_message() -> str:
-    """Build the daily report message by querying the database directly."""
-    from database import get_overview_kpi, get_fill_rate_overview, get_fill_rate_top_overweight
+    """Build the daily report message by querying the database directly.
+    Reports data for N-1 (yesterday) only.
+    """
+    from database import (
+        get_overview_kpi, get_trend_data,
+        get_fill_rate_daily, get_fill_rate_top_overweight,
+    )
+    from datetime import timedelta
+
+    # N-1 = yesterday
+    now = datetime.now()
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    time_str = now.strftime("%H:%M — %d/%m/%Y")
 
     try:
-        # Get backlog overview (latest day, no date filter)
-        overview = await get_overview_kpi()
-        fill_rate = await get_fill_rate_overview()
-        # Top 10 overweight trips (>100%, excluding fake routes)
-        top_overweight = await get_fill_rate_top_overweight(limit=10)
+        # Query all data filtered to yesterday only
+        overview = await get_overview_kpi(start_date=yesterday, end_date=yesterday)
+        trend_data = await get_trend_data(start_date=yesterday, end_date=yesterday)
+        fill_rate_daily = await get_fill_rate_daily(start_date=yesterday, end_date=yesterday)
+        top_overweight = await get_fill_rate_top_overweight(limit=10, start_date=yesterday, end_date=yesterday)
     except Exception as e:
         logger.error(f"[TelegramBot] Failed to query database: {e}")
         return _build_error_message(str(e))
 
     if not overview or not overview.get("total_volume"):
-        return _build_error_message("Không có dữ liệu trong database")
+        return _build_error_message(f"Không có dữ liệu ngày {yesterday}")
 
-    # Extract data
+    # ── Extract N-1 backlog data ──
     total_volume = overview.get("total_volume", 0)
     backlog_pct = overview.get("backlog_gt24h_percent", 0)
     backlog_vol = overview.get("backlog_gt24h_volume", 0)
     avg_leadtime = overview.get("avg_lead_time", 0)
-    latest_date = overview.get("latest_date", "N/A")
+    data_date = overview.get("latest_date", yesterday)
 
-    # Fill rate data
-    fr_weight = fill_rate.get("avg_fill_rate_weight", 0) if fill_rate else 0
-    fr_order = fill_rate.get("avg_fill_rate_order", 0) if fill_rate else 0
-    overweight_count = fill_rate.get("overweight_count", 0) if fill_rate else 0
-
-    # Current time
-    now = datetime.now()
-    time_str = now.strftime("%H:%M — %d/%m/%Y")
-
-    # Build top 10 overweight section
-    top10_text = _build_top10_section(top_overweight)
-
-    # Decide format based on SLA threshold
-    if backlog_pct > SLA_THRESHOLD:
-        return _build_urgent_alert(
-            time_str, latest_date, total_volume, backlog_pct, backlog_vol,
-            avg_leadtime, fr_weight, fr_order, overweight_count, top10_text,
-        )
+    # SLA status
+    if backlog_pct >= SLA_THRESHOLD:
+        sla_icon = "🔴"
+        sla_status = f"⛔ VƯỢT NGƯỠNG"
     else:
-        return _build_normal_report(
-            time_str, latest_date, total_volume, backlog_pct, backlog_vol,
-            avg_leadtime, fr_weight, fr_order, overweight_count, top10_text,
-        )
+        sla_icon = "✅"
+        sla_status = f"✅ AN TOÀN"
 
+    # ── Extract N-1 fill rate data ──
+    fr_day = fill_rate_daily[0] if fill_rate_daily else None
+    fr_trips = fr_day.get("total_trips", 0) if fr_day else 0
+    fr_weight = fr_day.get("avg_fill_weight", 0) if fr_day else 0
+    fr_order = fr_day.get("avg_fill_order", 0) if fr_day else 0
+    fr_overweight = fr_day.get("overweight_count", 0) if fr_day else 0
 
-def _build_normal_report(
-    time_str, latest_date, total_volume, backlog_pct, backlog_vol,
-    avg_leadtime, fr_weight, fr_order, overweight_count, top10_text,
-) -> str:
-    """Build normal daily report (backlog <= SLA threshold)."""
+    # ── Build report ──
     report = (
         f"📊 <b>BÁO CÁO VẬN HÀNH KTC</b>\n"
         f"🕐 {time_str}\n"
@@ -131,56 +128,33 @@ def _build_normal_report(
         f"\n"
         f"📦 <b>Tổng sản lượng:</b> {_format_number(total_volume)}\n"
         f"⏱ <b>LeadTime TB:</b> {avg_leadtime:.1f}h\n"
-        f"📅 <b>Ngày dữ liệu:</b> {latest_date}\n"
+        f"📅 <b>Ngày dữ liệu:</b> {data_date}\n"
         f"\n"
         f"━━ 📋 BACKLOG ━━━━━━━━━\n"
-        f"✅ <b>Backlog &gt;24h:</b> {backlog_pct:.2f}% ({_format_number(backlog_vol)} đơn)\n"
-        f"🎯 Ngưỡng SLA: {SLA_THRESHOLD}% → <b>AN TOÀN</b>\n"
-        f"\n"
-        f"━━ 🚛 LẤP ĐẦY TẢI ━━━━━\n"
-        f"⚖️ TB Lấp đầy (KL): <b>{fr_weight:.1f}%</b>\n"
-        f"📦 TB Lấp đầy (Đơn): <b>{fr_order:.1f}%</b>\n"
-        f"{'⚠️ Vượt tải: <b>' + str(overweight_count) + ' chuyến</b>' if overweight_count > 0 else '✅ Không có chuyến vượt tải'}\n"
+        f"{sla_icon} <b>% Backlog &gt;24h:</b> {backlog_pct:.2f}%\n"
+        f"{sla_icon} <b>Số đơn tồn &gt;24h:</b> {_format_number(backlog_vol)}\n"
+        f"🎯 Ngưỡng SLA: &gt;{SLA_THRESHOLD}% → <b>{sla_status}</b>\n"
     )
+
+    # Fill rate section
+    if fr_trips > 0:
+        ow_text = f"⚠️ Vượt tải (&gt;100%): <b>{fr_overweight} chuyến</b>" if fr_overweight > 0 else "✅ Vượt tải (&gt;100%): <b>0 chuyến</b>"
+        report += (
+            f"\n"
+            f"━━ 🚛 LẤP ĐẦY TẢI ━━━━━━\n"
+            f"📅 Ngày: <b>{_format_trip_date(yesterday)}</b> — {fr_trips} chuyến\n"
+            f"⚖️ TB Lấp đầy (KL): <b>{fr_weight:.1f}%</b>\n"
+            f"📦 TB Lấp đầy (Đơn): <b>{fr_order:.1f}%</b>\n"
+            f"{ow_text}\n"
+        )
+
+    # Top 10 overweight
+    top10_text = _build_top10_section(top_overweight)
     if top10_text:
         report += f"\n{top10_text}\n"
+
     report += (
         f"\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"🔗 <a href='https://ktc-dashboard.onrender.com'>Xem Dashboard</a>"
-    )
-    return report
-
-
-def _build_urgent_alert(
-    time_str, latest_date, total_volume, backlog_pct, backlog_vol,
-    avg_leadtime, fr_weight, fr_order, overweight_count, top10_text,
-) -> str:
-    """Build urgent alert message (backlog > SLA threshold)."""
-    report = (
-        f"🚨🚨🚨 <b>CẢNH BÁO KHẨN CẤP</b> 🚨🚨🚨\n"
-        f"⚠️ <b>BACKLOG VƯỢT NGƯỠNG SLA!</b>\n"
-        f"🕐 {time_str}\n"
-        f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"\n"
-        f"🔴 <b>% Backlog &gt;24h: {backlog_pct:.2f}%</b>\n"
-        f"🔴 <b>Số đơn tồn &gt;24h: {_format_number(backlog_vol)}</b>\n"
-        f"🎯 Ngưỡng SLA: {SLA_THRESHOLD}% → <b>⛔ VƯỢT NGƯỠNG</b>\n"
-        f"\n"
-        f"━━ 📊 CHI TIẾT ━━━━━━━━━\n"
-        f"📦 Tổng sản lượng: {_format_number(total_volume)}\n"
-        f"⏱ LeadTime TB: <b>{avg_leadtime:.1f}h</b>\n"
-        f"📅 Ngày dữ liệu: {latest_date}\n"
-        f"\n"
-        f"━━ 🚛 LẤP ĐẦY TẢI ━━━━━\n"
-        f"⚖️ TB Lấp đầy (KL): <b>{fr_weight:.1f}%</b>\n"
-        f"📦 TB Lấp đầy (Đơn): <b>{fr_order:.1f}%</b>\n"
-        f"{'🔴 Vượt tải: <b>' + str(overweight_count) + ' chuyến</b>' if overweight_count > 0 else '✅ Không có chuyến vượt tải'}\n"
-    )
-    if top10_text:
-        report += f"\n{top10_text}\n"
-    report += (
-        f"\n━━━━━━━━━━━━━━━━━━━━\n"
-        f"⚡ <b>Cần xử lý ngay!</b>\n"
         f"🔗 <a href='https://ktc-dashboard.onrender.com'>Xem Dashboard</a>"
     )
     return report
@@ -227,7 +201,7 @@ def _build_top10_section(top_overweight: list) -> str:
         else:
             rank = f"{i}."
 
-        lines.append(f"{rank} <b>{fr:.1f}%</b> | {plate} | {route} | 📅{trip_date}")
+        lines.append(f"{rank} 📅{trip_date} | {plate} | {route} | <b>{fr:.1f}%</b>")
 
     return "\n".join(lines)
 

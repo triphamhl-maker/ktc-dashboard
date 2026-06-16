@@ -630,6 +630,55 @@ async def get_distribution_latest() -> List[Dict]:
 
 # ── Fill Rate Functions ────────────────────────────────────
 
+async def get_fill_rate_daily(
+    start_date: Optional[str] = None,
+    end_date: Optional[str] = None,
+) -> List[Dict]:
+    """Get fill rate aggregated by day (for daily Telegram report).
+    
+    Returns per-day: total_trips, avg_fill_weight, avg_fill_order, overweight_count.
+    """
+    db = await get_db()
+    try:
+        conds = []
+        params = []
+        if start_date:
+            conds.append("trip_date >= ?")
+            params.append(start_date)
+        if end_date:
+            conds.append("trip_date <= ?")
+            params.append(end_date)
+        where = ("WHERE " + " AND ".join(conds)) if conds else ""
+
+        cursor = await db.execute(
+            f"""SELECT trip_date,
+                COUNT(*) as total_trips,
+                AVG(fill_rate_weight) as avg_fill_weight,
+                AVG(fill_rate_order) as avg_fill_order,
+                SUM(CASE WHEN fill_rate_weight > 100
+                         AND (route_name NOT LIKE '%DongNai_GHN_3%')
+                         AND (license_plate != '50H77777')
+                    THEN 1 ELSE 0 END) as overweight_count
+               FROM fill_rate {where}
+               GROUP BY trip_date
+               ORDER BY trip_date DESC""",
+            params,
+        )
+        rows = await cursor.fetchall()
+        return [
+            {
+                "trip_date": dict(r)["trip_date"],
+                "total_trips": dict(r)["total_trips"],
+                "avg_fill_weight": round(dict(r)["avg_fill_weight"] or 0, 1),
+                "avg_fill_order": round(dict(r)["avg_fill_order"] or 0, 1),
+                "overweight_count": dict(r)["overweight_count"] or 0,
+            }
+            for r in rows
+        ]
+    finally:
+        await db.close()
+
+
 async def insert_fill_rate_batch(rows: List[Dict]):
     """Insert or update a batch of fill rate rows."""
     if not rows:
