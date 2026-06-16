@@ -1552,9 +1552,9 @@ body {
 .fill-rate-warning-section .chart-card { animation-delay: 0.7s; }
 .fill-rate-table-section .chart-card { animation-delay: 0.8s; }
 
-.kpi-row-fill-rate .kpi-card:nth-child(1) { animation-delay: 0.5s; opacity: 0; }
-.kpi-row-fill-rate .kpi-card:nth-child(2) { animation-delay: 0.58s; opacity: 0; }
-.kpi-row-fill-rate .kpi-card:nth-child(3) { animation-delay: 0.66s; opacity: 0; }
+.kpi-row-fill-rate .kpi-card:nth-child(1) { animation-delay: 0.5s; }
+.kpi-row-fill-rate .kpi-card:nth-child(2) { animation-delay: 0.58s; }
+.kpi-row-fill-rate .kpi-card:nth-child(3) { animation-delay: 0.66s; }
 
 /* Responsive — Fill Rate */
 @media (max-width: 1400px) {
